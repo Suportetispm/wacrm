@@ -269,12 +269,14 @@ export interface MessageReaction {
 export interface WhatsAppConfig {
   id: string;
   user_id: string;
-  phone_number_id: string;
+  /** Which connection this row represents. Drives which of the two
+   *  field groups below (Meta vs UAZAPI) is populated. */
+  provider: 'meta' | 'uazapi';
+  /** Meta Cloud API fields — only populated when provider === 'meta'. */
+  phone_number_id?: string;
   waba_id?: string;
-  access_token: string;
+  access_token?: string;
   verify_token?: string;
-  status: 'connected' | 'disconnected';
-  connected_at?: string;
   /**
    * Set when POST /{phone_number_id}/register last succeeded. NULL
    * means the number was saved but never actually subscribed for
@@ -285,6 +287,12 @@ export interface WhatsAppConfig {
   subscribed_apps_at?: string;
   /** Last error from /register; cleared on success. */
   last_registration_error?: string;
+  /** UAZAPI fields — only populated when provider === 'uazapi'. The
+   *  instance token itself is never sent to the client. */
+  uazapi_instance_id?: string;
+  uazapi_instance_name?: string;
+  status: 'connected' | 'disconnected' | 'connecting' | 'hibernated';
+  connected_at?: string;
 }
 
 // Raw Meta status enum. We persist this verbatim from Meta (sync + webhook)

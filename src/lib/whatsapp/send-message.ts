@@ -29,12 +29,16 @@ import {
   sendInteractiveList,
   type MediaKind,
 } from '@/lib/whatsapp/meta-api';
+import * as uazapi from '@/lib/whatsapp/uazapi-api';
 import {
   validateInteractivePayload,
   interactivePayloadPreviewText,
   type InteractiveMessagePayload,
 } from '@/lib/whatsapp/interactive';
-import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
+import {
+  loadActiveWhatsAppConfig,
+  ProviderUnsupportedError,
+} from '@/lib/whatsapp/active-config';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import {
   sanitizePhoneForMeta,
@@ -247,14 +251,10 @@ export async function sendMessageToConversation(
     );
   }
 
-  // WhatsApp config, account-scoped.
-  const { data: config, error: configError } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', accountId)
-    .single();
+  // WhatsApp config, account-scoped — whichever provider is active.
+  const config = await loadActiveWhatsAppConfig(db, accountId);
 
-  if (configError || !config) {
+  if (!config) {
     throw new SendMessageError(
       'whatsapp_not_configured',
       'WhatsApp not configured. Please set up your WhatsApp integration first.',
@@ -262,22 +262,12 @@ export async function sendMessageToConversation(
     );
   }
 
-  const accessToken = decrypt(config.access_token);
-
-  // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
-  if (isLegacyFormat(config.access_token)) {
-    void db
-      .from('whatsapp_config')
-      .update({ access_token: encrypt(accessToken) })
-      .eq('id', config.id)
-      .then(({ error }: { error: { message: string } | null }) => {
-        if (error) {
-          console.warn(
-            '[send-message] access_token GCM upgrade failed:',
-            error.message
-          );
-        }
-      });
+  if (messageType === 'template' && config.provider === 'uazapi') {
+    throw new SendMessageError(
+      'provider_unsupported',
+      new ProviderUnsupportedError('Templates').message,
+      400
+    );
   }
 
   // Resolve the reply target to its Meta message_id. The parent must
@@ -330,10 +320,61 @@ export async function sendMessageToConversation(
   }
 
   const attempt = async (phone: string): Promise<string> => {
+    if (config.provider === 'uazapi') {
+      // 'template' já foi rejeitado mais acima para uazapi — só
+      // text/media/interactive chegam aqui.
+      if (isMediaKind) {
+        const result = await uazapi.sendMediaMessage({
+          instanceToken: config.instanceToken,
+          to: phone,
+          kind: messageType as MediaKind,
+          link: mediaUrl!,
+          caption: contentText || undefined,
+          filename: filename || undefined,
+          contextMessageId,
+        });
+        return result.messageId;
+      }
+      if (messageType === 'interactive') {
+        const p = interactivePayload!;
+        if (p.kind === 'buttons') {
+          const result = await uazapi.sendInteractiveButtons({
+            instanceToken: config.instanceToken,
+            to: phone,
+            bodyText: p.body,
+            headerText: p.header || undefined,
+            footerText: p.footer || undefined,
+            buttons: p.buttons,
+            contextMessageId,
+          });
+          return result.messageId;
+        }
+        const result = await uazapi.sendInteractiveList({
+          instanceToken: config.instanceToken,
+          to: phone,
+          bodyText: p.body,
+          buttonLabel: p.button_label,
+          headerText: p.header || undefined,
+          footerText: p.footer || undefined,
+          sections: p.sections,
+          contextMessageId,
+        });
+        return result.messageId;
+      }
+      const result = await uazapi.sendTextMessage({
+        instanceToken: config.instanceToken,
+        to: phone,
+        text: contentText!,
+        contextMessageId,
+      });
+      return result.messageId;
+    }
+
+    // config.provider === 'meta'
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+        phoneNumberId: config.phoneNumberId,
+        accessToken: config.accessToken,
         to: phone,
         templateName: templateName!,
         language: templateLanguage || 'en_US',
@@ -346,8 +387,8 @@ export async function sendMessageToConversation(
     }
     if (isMediaKind) {
       const result = await sendMediaMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+        phoneNumberId: config.phoneNumberId,
+        accessToken: config.accessToken,
         to: phone,
         kind: messageType as MediaKind,
         link: mediaUrl!,
@@ -361,8 +402,8 @@ export async function sendMessageToConversation(
       const p = interactivePayload!;
       if (p.kind === 'buttons') {
         const result = await sendInteractiveButtons({
-          phoneNumberId: config.phone_number_id,
-          accessToken,
+          phoneNumberId: config.phoneNumberId,
+          accessToken: config.accessToken,
           to: phone,
           bodyText: p.body,
           headerText: p.header || undefined,
@@ -373,8 +414,8 @@ export async function sendMessageToConversation(
         return result.messageId;
       }
       const result = await sendInteractiveList({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+        phoneNumberId: config.phoneNumberId,
+        accessToken: config.accessToken,
         to: phone,
         bodyText: p.body,
         buttonLabel: p.button_label,
@@ -386,8 +427,8 @@ export async function sendMessageToConversation(
       return result.messageId;
     }
     const result = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+      phoneNumberId: config.phoneNumberId,
+      accessToken: config.accessToken,
       to: phone,
       text: contentText!,
       contextMessageId,
@@ -424,8 +465,11 @@ export async function sendMessageToConversation(
 
     if (lastError) throw lastError;
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : 'Unknown Meta API error';
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    if (config.provider === 'uazapi') {
+      console.error('[send-message] UAZAPI send failed for all variants:', message);
+      throw new SendMessageError('uazapi_error', `UAZAPI error: ${message}`, 502);
+    }
     console.error('[send-message] Meta send failed for all variants:', message);
     throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
   }

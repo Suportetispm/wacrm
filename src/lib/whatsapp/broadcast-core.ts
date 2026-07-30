@@ -19,7 +19,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
-import { decrypt } from '@/lib/whatsapp/encryption';
+import {
+  loadActiveWhatsAppConfig,
+  ProviderUnsupportedError,
+} from '@/lib/whatsapp/active-config';
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -110,20 +113,24 @@ export async function createBroadcast(
   }
 
   // Config (fail fast + provides the audit trail owner already resolved
-  // by the caller). Meta send needs phone_number_id + decrypted token.
-  const { data: config, error: configError } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', accountId)
-    .single();
-  if (configError || !config) {
+  // by the caller). Broadcasts are template-based — a Meta-only
+  // concept — so a UAZAPI-connected account is rejected below rather
+  // than attempting a send with no template equivalent.
+  const config = await loadActiveWhatsAppConfig(db, accountId);
+  if (!config) {
     throw new BroadcastError(
       'whatsapp_not_configured',
       'WhatsApp not configured. Please set up your WhatsApp integration first.',
       400
     );
   }
-  const accessToken = decrypt(config.access_token);
+  if (config.provider === 'uazapi') {
+    throw new BroadcastError(
+      'provider_unsupported',
+      new ProviderUnsupportedError('Broadcasts (template-based)').message,
+      400
+    );
+  }
 
   // Template row (once) for header/button components; guard a
   // malformed local row rather than N identical opaque failures.
@@ -238,8 +245,8 @@ export async function createBroadcast(
     broadcastId: broadcast.id,
     templateName,
     templateLanguage,
-    phoneNumberId: config.phone_number_id,
-    accessToken,
+    phoneNumberId: config.phoneNumberId,
+    accessToken: config.accessToken,
     templateRow,
     planned,
     rejected,

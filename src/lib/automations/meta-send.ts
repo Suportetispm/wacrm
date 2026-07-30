@@ -1,10 +1,14 @@
 import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
+import * as uazapi from '@/lib/whatsapp/uazapi-api'
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
 } from '@/lib/flows/meta-send'
-import { decrypt } from '@/lib/whatsapp/encryption'
+import {
+  loadActiveWhatsAppConfig,
+  ProviderUnsupportedError,
+} from '@/lib/whatsapp/active-config'
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -131,22 +135,33 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
     throw new Error(`contact phone invalid: ${contact.phone}`)
   }
 
-  const { data: config, error: configErr } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', input.accountId)
-    .single()
-  if (configErr || !config) {
+  const config = await loadActiveWhatsAppConfig(db, input.accountId)
+  if (!config) {
     throw new Error('WhatsApp not configured for this account')
   }
-
-  const accessToken = decrypt(config.access_token)
+  if (input.kind === 'template' && config.provider === 'uazapi') {
+    throw new ProviderUnsupportedError('Templates')
+  }
 
   const attempt = async (phone: string): Promise<string> => {
+    if (config.provider === 'uazapi') {
+      // 'template' já foi rejeitado acima para uazapi — só 'text' chega aqui.
+      if (input.kind !== 'text') {
+        throw new ProviderUnsupportedError('Templates')
+      }
+      const r = await uazapi.sendTextMessage({
+        instanceToken: config.instanceToken,
+        to: phone,
+        text: input.text,
+      })
+      return r.messageId
+    }
+
+    // config.provider === 'meta'
     if (input.kind === 'template') {
       const r = await sendTemplateMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
+        phoneNumberId: config.phoneNumberId,
+        accessToken: config.accessToken,
         to: phone,
         templateName: input.templateName,
         language: input.language,
@@ -155,8 +170,8 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
       return r.messageId
     }
     const r = await sendTextMessage({
-      phoneNumberId: config.phone_number_id,
-      accessToken,
+      phoneNumberId: config.phoneNumberId,
+      accessToken: config.accessToken,
       to: phone,
       text: input.text,
     })
