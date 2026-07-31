@@ -30,11 +30,50 @@ import {
   AccordionContent,
 } from '@/components/ui/accordion';
 import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
+import type { UazapiInstanceStatus } from '@/lib/whatsapp/uazapi-api';
 
 const MASKED_TOKEN = '••••••••••••••••';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
 type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
+
+const UAZAPI_STATUS_LABEL_PT: Record<UazapiInstanceStatus, string> = {
+  disconnected: 'Desconectado',
+  connecting: 'Aguardando conexão',
+  connected: 'Conectado',
+  hibernated: 'Hibernado',
+};
+
+/** Maps a failed fetch to PT-BR copy + whether it means "instance is
+ *  gone/invalid" (→ offer recreate) vs. everything else (→ just an
+ *  error message, no recreate offered). Shared by every UAZAPI call
+ *  in this component so 401/403/409/500/502 are handled uniformly. */
+function describeUazapiFetchError(
+  status: number,
+  data: { error?: string; code?: string } | undefined,
+): { message: string; instanceInvalid: boolean } {
+  if (data?.code === 'instance_invalid') {
+    return {
+      message: data.error || 'A instância UAZAPI não foi encontrada ou é inválida.',
+      instanceInvalid: true,
+    };
+  }
+  if (status === 401) {
+    return { message: 'Sessão expirada. Atualize a página e faça login novamente.', instanceInvalid: false };
+  }
+  if (status === 403) {
+    return {
+      message: 'Você não tem permissão para esta ação. Fale com um administrador da conta.',
+      instanceInvalid: false,
+    };
+  }
+  if (status === 500) {
+    return { message: 'Erro interno do servidor. Tente novamente em instantes.', instanceInvalid: false };
+  }
+  // 409 (concurrency/incomplete-config) and 502 (UAZAPI unreachable)
+  // already carry a human-readable message from the route itself.
+  return { message: data?.error || 'Erro desconhecido.', instanceInvalid: false };
+}
 
 export function WhatsAppConfig() {
   const t = useTranslations('Settings.whatsapp');
@@ -44,12 +83,23 @@ export function WhatsAppConfig() {
   // context and key every read off it — so a teammate who just
   // joined an account sees the inviter's saved config without
   // having to re-enter anything.
-  const { user, accountId, loading: authLoading, profileLoading } = useAuth();
+  const { user, accountId, canEditSettings, loading: authLoading, profileLoading } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [uazapiStatus, setUazapiStatus] = useState<UazapiInstanceStatus | null>(null);
+  const [uazapiQrCode, setUazapiQrCode] = useState<string | null>(null);
+  const [uazapiPairCode, setUazapiPairCode] = useState<string | null>(null);
+  const [uazapiConnecting, setUazapiConnecting] = useState(false);
+  const [uazapiRefreshingStatus, setUazapiRefreshingStatus] = useState(false);
+  const [uazapiError, setUazapiError] = useState<string | null>(null);
+  const [uazapiInstanceInvalid, setUazapiInstanceInvalid] = useState(false);
+  const [creatingUazapiInstance, setCreatingUazapiInstance] = useState(false);
+  const [recreatingUazapiInstance, setRecreatingUazapiInstance] = useState(false);
+  const uazapiPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const uazapiPollErrorCountRef = useRef(0);
   const [showToken, setShowToken] = useState(false);
   const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
@@ -133,8 +183,11 @@ export function WhatsAppConfig() {
       // Clear any stale probe result when reloading the row.
       setRegistrationProbe(null);
 
-      // Then verify health via the API (decrypts token + pings Meta)
-      if (data) {
+      // Then verify health via the API (decrypts token + pings Meta).
+      // Meta-only probe — a UAZAPI row has no access_token to decrypt
+      // and would otherwise show a false "token corrupted" banner
+      // whose Reset button deletes the whole row (incl. UAZAPI).
+      if (data && data.provider === 'meta') {
         try {
           const res = await fetch('/api/whatsapp/config', { method: 'GET' });
           const payload = await res.json();
@@ -183,6 +236,12 @@ export function WhatsAppConfig() {
   }, [authLoading, profileLoading, user?.id, accountId, fetchConfig]);
 
   async function handleSave() {
+    if (config?.provider === 'uazapi') {
+      // Meta-only form; nothing to validate/save while UAZAPI is the
+      // active provider. The button is hidden in this state — this
+      // guard just keeps the function itself provider-aware too.
+      return;
+    }
     if (!phoneNumberId.trim()) {
       toast.error('Phone Number ID is required');
       return;
@@ -366,6 +425,240 @@ export function WhatsAppConfig() {
     }
   }
 
+  // ============================================================
+  // UAZAPI — connect existing instance by QR code (ETAPA 7).
+  // Reuses the instance already provisioned in ETAPA 6.1; never
+  // creates a new one. Only meaningful when config.provider ===
+  // 'uazapi'. GET /status is read-only; POST /connect is the only
+  // call that starts a real connection attempt, and only fires on
+  // an explicit "Gerar QR Code" click, never automatically.
+  // ============================================================
+  const stopUazapiPolling = useCallback(() => {
+    if (uazapiPollIntervalRef.current) {
+      clearInterval(uazapiPollIntervalRef.current);
+      uazapiPollIntervalRef.current = null;
+    }
+    uazapiPollErrorCountRef.current = 0;
+  }, []);
+
+  const refreshUazapiStatus = useCallback(async (): Promise<UazapiInstanceStatus | 'invalid' | null> => {
+    try {
+      const res = await fetch('/api/uazapi/status', { method: 'GET' });
+      const data = await res.json();
+      if (!res.ok) {
+        const { message, instanceInvalid } = describeUazapiFetchError(res.status, data);
+        setUazapiInstanceInvalid(instanceInvalid);
+        setUazapiError(instanceInvalid ? null : message);
+        return instanceInvalid ? 'invalid' : null;
+      }
+      setUazapiInstanceInvalid(false);
+      setUazapiStatus(data.status);
+      setUazapiError(null);
+      // A QR/pairing code is only meaningful while 'connecting' —
+      // any other status means it's stale (expired, already used,
+      // or the instance moved on) and must not linger on screen.
+      if (data.status !== 'connecting') {
+        setUazapiQrCode(null);
+        setUazapiPairCode(null);
+      }
+      return data.status as UazapiInstanceStatus;
+    } catch (err) {
+      console.error('uazapi status refresh failed:', err);
+      setUazapiError('Erro de rede ao consultar status.');
+      return null;
+    }
+  }, []);
+
+  const startUazapiPolling = useCallback(() => {
+    stopUazapiPolling();
+    uazapiPollIntervalRef.current = setInterval(async () => {
+      const status = await refreshUazapiStatus();
+      if (status === 'invalid') {
+        stopUazapiPolling();
+        return;
+      }
+      if (status === null) {
+        uazapiPollErrorCountRef.current += 1;
+        if (uazapiPollErrorCountRef.current >= 5) {
+          stopUazapiPolling();
+          setUazapiError(
+            'Não foi possível confirmar o status após várias tentativas. Tente atualizar manualmente.',
+          );
+        }
+        return;
+      }
+      uazapiPollErrorCountRef.current = 0;
+      // Stop conditions: connected, disconnected, hibernated — only
+      // 'connecting' keeps the poll alive.
+      if (status === 'connected' || status === 'disconnected' || status === 'hibernated') {
+        stopUazapiPolling();
+      }
+    }, 3500);
+  }, [refreshUazapiStatus, stopUazapiPolling]);
+
+  // Stop condition: provider switched away from 'uazapi' while this
+  // component stays mounted (e.g. another admin changed it).
+  useEffect(() => {
+    if (config?.provider !== 'uazapi') {
+      stopUazapiPolling();
+    }
+  }, [config?.provider, stopUazapiPolling]);
+
+  // Stop condition: component unmounted.
+  useEffect(() => {
+    return () => stopUazapiPolling();
+  }, [stopUazapiPolling]);
+
+  // Read-only auto-refresh the moment a UAZAPI instance is known to
+  // exist. GET only — never creates an instance or starts a
+  // connection attempt.
+  useEffect(() => {
+    if (config?.provider === 'uazapi' && uazapiStatus === null) {
+      void refreshUazapiStatus();
+    }
+  }, [config?.provider, uazapiStatus, refreshUazapiStatus]);
+
+  async function handleGenerateUazapiQrCode() {
+    if (uazapiConnecting) return;
+    setUazapiConnecting(true);
+    setUazapiError(null);
+    try {
+      const res = await fetch('/api/uazapi/connect', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        const { message, instanceInvalid } = describeUazapiFetchError(res.status, data);
+        setUazapiInstanceInvalid(instanceInvalid);
+        setUazapiError(instanceInvalid ? null : message);
+        return;
+      }
+      setUazapiInstanceInvalid(false);
+      setUazapiStatus(data.status);
+      setUazapiQrCode(data.status === 'connecting' ? data.qrcode ?? null : null);
+      setUazapiPairCode(data.status === 'connecting' ? data.paircode ?? null : null);
+      if (data.status === 'connecting') {
+        startUazapiPolling();
+      } else if (data.status === 'connected') {
+        stopUazapiPolling();
+        toast.success('WhatsApp já está conectado.');
+      }
+    } catch (err) {
+      console.error('uazapi connect failed:', err);
+      setUazapiError('Erro de rede ao gerar o QR Code.');
+    } finally {
+      setUazapiConnecting(false);
+    }
+  }
+
+  async function handleRefreshUazapiStatusClick() {
+    if (uazapiRefreshingStatus) return;
+    setUazapiRefreshingStatus(true);
+    await refreshUazapiStatus();
+    setUazapiRefreshingStatus(false);
+  }
+
+  // Estado (a): nenhuma configuração UAZAPI ainda para esta conta.
+  // Só cria — nunca apaga nada; se já houver credenciais Meta na
+  // mesma linha, a rota já preserva ambas (dormant), sem tocar nelas.
+  async function handleCreateUazapiInstance() {
+    if (creatingUazapiInstance) return;
+
+    // Só pede confirmação extra quando já existe uma configuração Meta
+    // ativa — criar do zero (nenhuma configuração) não precisa disso.
+    if (config?.provider === 'meta') {
+      const confirmed = confirm(
+        'Esta conta está usando a Meta Cloud API. Ao criar a instância UAZAPI, ' +
+          'a UAZAPI passará a ser o provedor ativo para novos envios. As ' +
+          'credenciais Meta serão preservadas, mas somente um provedor opera ' +
+          'por vez. Deseja continuar?',
+      );
+      if (!confirmed) return;
+    }
+
+    setCreatingUazapiInstance(true);
+    setUazapiError(null);
+    try {
+      const res = await fetch('/api/uazapi/instance', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        const { message } = describeUazapiFetchError(res.status, data);
+        setUazapiError(message);
+        return;
+      }
+      toast.success(
+        'UAZAPI é agora o provedor ativo desta conta. As credenciais Meta ' +
+          'continuam salvas como alternativa — não há troca automática entre ' +
+          'provedores; para voltar ao Meta, desconecte o UAZAPI explicitamente.',
+        { duration: 12000 },
+      );
+      if (accountId) await fetchConfig(accountId);
+    } catch (err) {
+      console.error('uazapi instance creation failed:', err);
+      setUazapiError('Erro de rede ao criar a instância.');
+    } finally {
+      setCreatingUazapiInstance(false);
+    }
+  }
+
+  // Estado (c): a linha local diz 'uazapi' mas a UAZAPI não reconhece
+  // mais essa instância (deletada manualmente no painel, por ex.).
+  // DELETE só mexe na linha whatsapp_config desta conta — nunca em
+  // contacts/conversations/messages/profiles/accounts — e só então o
+  // POST cria uma instância nova. Sequencial, nunca em paralelo, para
+  // nunca ter duas instâncias vivas ao mesmo tempo.
+  async function handleRecreateUazapiInstance() {
+    if (recreatingUazapiInstance) return;
+    if (
+      !confirm(
+        'Isso vai remover a configuração UAZAPI local (inválida) e criar uma instância nova. Contatos, conversas, mensagens, usuários, a conta e eventuais dados Meta preservados NÃO são afetados. Continuar?',
+      )
+    ) {
+      return;
+    }
+    setRecreatingUazapiInstance(true);
+    setUazapiError(null);
+    try {
+      const delRes = await fetch('/api/uazapi/instance', { method: 'DELETE' });
+      const delData = await delRes.json();
+      if (!delRes.ok) {
+        const { message } = describeUazapiFetchError(delRes.status, delData);
+        setUazapiError(message);
+        return;
+      }
+      const createRes = await fetch('/api/uazapi/instance', { method: 'POST' });
+      const createData = await createRes.json();
+      if (!createRes.ok) {
+        const { message } = describeUazapiFetchError(createRes.status, createData);
+        setUazapiError(message);
+        return;
+      }
+      setUazapiInstanceInvalid(false);
+      setUazapiStatus(null);
+      toast.success('Instância UAZAPI recriada.');
+      if (accountId) await fetchConfig(accountId);
+    } catch (err) {
+      console.error('uazapi instance recreation failed:', err);
+      setUazapiError('Erro de rede ao recriar a instância.');
+    } finally {
+      setRecreatingUazapiInstance(false);
+    }
+  }
+
+  const canGenerateUazapiQrCode =
+    Boolean(user) &&
+    canEditSettings &&
+    config?.provider === 'uazapi' &&
+    !uazapiInstanceInvalid &&
+    uazapiStatus !== 'connected';
+
+  const showCreateUazapiInstanceButton =
+    Boolean(user) && canEditSettings && config?.provider !== 'uazapi';
+
+  // Meta-only UI (fields, connection/registration status, Save/Test/
+  // Reset) only makes sense when there's no config yet (onboarding
+  // via Meta) or the account is already on Meta. Hidden — not just
+  // disabled — while UAZAPI is active.
+  const showMetaSection = !config || config.provider === 'meta';
+
   function handleCopyWebhookUrl() {
     navigator.clipboard.writeText(webhookUrl);
     toast.success('Webhook URL copied to clipboard');
@@ -396,6 +689,8 @@ export function WhatsAppConfig() {
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
       {/* Main config form */}
       <div className="space-y-6">
+        {showMetaSection ? (
+          <>
         {/* Corrupted-token reset banner */}
         {showResetBanner && (
           <Alert className="bg-amber-950/40 border-amber-600/40">
@@ -682,8 +977,198 @@ export function WhatsAppConfig() {
             </div>
           </CardContent>
         </Card>
+          </>
+        ) : (
+          <Alert className="bg-card border-border">
+            <AlertTitle className="text-foreground">
+              Meta Cloud API preservada
+            </AlertTitle>
+            <AlertDescription className="text-muted-foreground text-sm">
+              Esta conta está usando UAZAPI como provedor ativo. Eventuais
+              credenciais Meta ficam preservadas e ocultas aqui enquanto o
+              UAZAPI estiver ativo.
+            </AlertDescription>
+          </Alert>
+        )}
 
-        {/* Action Buttons */}
+        {/* UAZAPI (ETAPA 7.2) — sempre visível, com 4 ramos internos:
+            (a) nenhuma configuração, (b) instância válida desconectada/
+            conectando/hibernada, (c) instância local existe mas é
+            inválida na UAZAPI, (d) conectada. Nunca cria/reconecta
+            automaticamente — só por clique explícito. */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-foreground">UAZAPI (WhatsApp via QR Code)</CardTitle>
+            <CardDescription className="text-muted-foreground">
+              Conexão alternativa ao Meta Cloud API — um número oficial da empresa, conectado por QR Code.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {uazapiError && (
+              <Alert className="bg-red-950/30 border-red-700/50">
+                <AlertTitle className="text-red-200">Erro</AlertTitle>
+                <AlertDescription className="text-red-100/80 text-sm">
+                  {uazapiError}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* (a) nenhuma configuração UAZAPI ainda */}
+            {(!config || config.provider !== 'uazapi') && (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma instância UAZAPI configurada para esta conta.
+                </p>
+                {showCreateUazapiInstanceButton ? (
+                  <Button
+                    onClick={handleCreateUazapiInstance}
+                    disabled={creatingUazapiInstance}
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                  >
+                    {creatingUazapiInstance ? (
+                      <>
+                        <Loader2 className="size-4 animate-spin" />
+                        Criando…
+                      </>
+                    ) : (
+                      'Criar instância UAZAPI'
+                    )}
+                  </Button>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Somente administradores podem criar a instância UAZAPI.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* (c) instância existe localmente mas é inválida na UAZAPI */}
+            {config?.provider === 'uazapi' && uazapiInstanceInvalid && (
+              <div className="space-y-3">
+                <Alert className="bg-amber-950/30 border-amber-700/50">
+                  <AlertTitle className="text-amber-200">Instância UAZAPI não encontrada</AlertTitle>
+                  <AlertDescription className="text-amber-100/80 text-sm">
+                    A configuração local existe, mas o servidor UAZAPI não reconhece mais essa
+                    instância (pode ter sido removida manualmente). Contatos, conversas, mensagens e
+                    a conta não são afetados por essa situação.
+                  </AlertDescription>
+                </Alert>
+                {canEditSettings ? (
+                  <Button
+                    variant="outline"
+                    onClick={handleRecreateUazapiInstance}
+                    disabled={recreatingUazapiInstance}
+                    className="border-amber-700/50 text-amber-300 hover:bg-amber-950/30"
+                  >
+                    {recreatingUazapiInstance ? (
+                      <>
+                        <Loader2 className="size-4 animate-spin" />
+                        Recriando…
+                      </>
+                    ) : (
+                      'Recriar instância UAZAPI'
+                    )}
+                  </Button>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Somente administradores podem recriar a instância UAZAPI.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* (b)/(d) instância válida — status normal ou conectada */}
+            {config?.provider === 'uazapi' && !uazapiInstanceInvalid && (
+              <>
+                <div className="flex items-center gap-2">
+                  {uazapiStatus === 'connected' ? (
+                    <CheckCircle2 className="size-4 text-emerald-400" />
+                  ) : uazapiStatus === 'connecting' ? (
+                    <Loader2 className="size-4 animate-spin text-amber-400" />
+                  ) : (
+                    <XCircle className="size-4 text-muted-foreground" />
+                  )}
+                  <span className="text-sm text-foreground">
+                    Status: {uazapiStatus ? UAZAPI_STATUS_LABEL_PT[uazapiStatus] : 'Desconhecido'}
+                  </span>
+                </div>
+
+                {uazapiStatus === 'connected' ? (
+                  <Alert className="bg-emerald-950/30 border-emerald-700/50">
+                    <AlertTitle className="text-emerald-200">WhatsApp conectado</AlertTitle>
+                    <AlertDescription className="text-emerald-100/80 text-sm">
+                      Esta instância UAZAPI está conectada e pronta para uso.
+                    </AlertDescription>
+                  </Alert>
+                ) : (
+                  <>
+                    {uazapiQrCode && (
+                      <div className="flex flex-col items-center gap-2 rounded border border-border bg-muted p-4">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={uazapiQrCode}
+                          alt="QR Code de conexão do WhatsApp"
+                          className="size-56"
+                        />
+                        <p className="text-xs text-muted-foreground text-center">
+                          Abra o WhatsApp no celular do número oficial → Aparelhos conectados → Conectar um aparelho.
+                        </p>
+                      </div>
+                    )}
+
+                    {uazapiPairCode && (
+                      <p className="text-sm text-foreground">
+                        Código de pareamento:{' '}
+                        <span className="font-mono tracking-widest">{uazapiPairCode}</span>
+                      </p>
+                    )}
+                  </>
+                )}
+
+                <div className="flex flex-wrap gap-3 items-center">
+                  {canGenerateUazapiQrCode && (
+                    <Button
+                      onClick={handleGenerateUazapiQrCode}
+                      disabled={uazapiConnecting}
+                      className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                    >
+                      {uazapiConnecting ? (
+                        <>
+                          <Loader2 className="size-4 animate-spin" />
+                          Gerando…
+                        </>
+                      ) : (
+                        'Gerar QR Code'
+                      )}
+                    </Button>
+                  )}
+                  {!canEditSettings && uazapiStatus !== 'connected' && (
+                    <p className="text-xs text-muted-foreground">
+                      Somente administradores podem gerar um novo QR Code.
+                    </p>
+                  )}
+                  <Button
+                    variant="outline"
+                    onClick={handleRefreshUazapiStatusClick}
+                    disabled={uazapiRefreshingStatus}
+                    className="border-border text-muted-foreground hover:text-foreground hover:bg-muted"
+                  >
+                    {uazapiRefreshingStatus ? (
+                      <>
+                        <Loader2 className="size-4 animate-spin" />
+                        Atualizando…
+                      </>
+                    ) : (
+                      'Atualizar status'
+                    )}
+                  </Button>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {showMetaSection && (
         <div className="flex flex-wrap gap-3">
           <Button
             onClick={handleSave}
@@ -738,6 +1223,7 @@ export function WhatsAppConfig() {
             </Button>
           )}
         </div>
+        )}
       </div>
 
       {/* Setup Instructions Sidebar */}

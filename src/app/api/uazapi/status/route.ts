@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentAccount, toErrorResponse } from '@/lib/auth/account'
 import { loadActiveWhatsAppConfig } from '@/lib/whatsapp/active-config'
-import { getInstanceStatus } from '@/lib/whatsapp/uazapi-api'
+import { getInstanceStatus, UazapiHttpError } from '@/lib/whatsapp/uazapi-api'
 
 const GENERIC_UAZAPI_ERROR = 'Unable to reach UAZAPI. Please try again.'
 
@@ -41,6 +41,16 @@ export async function GET() {
       '[uazapi/status] getInstanceStatus failed:',
       err instanceof Error ? err.name : 'UnknownError',
     )
+    // UAZAPI itself said "unauthorized" / "not found" — the instance
+    // was likely deleted or its token is no longer valid server-side.
+    // Distinguishable from a generic/transient failure so the client
+    // can offer "recreate" instead of just "try again".
+    if (err instanceof UazapiHttpError && [401, 403, 404].includes(err.status)) {
+      return NextResponse.json(
+        { error: 'UAZAPI instance not found or invalid.', code: 'instance_invalid' },
+        { status: 409 },
+      )
+    }
     return NextResponse.json({ error: GENERIC_UAZAPI_ERROR }, { status: 502 })
   }
 

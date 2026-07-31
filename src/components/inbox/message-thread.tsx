@@ -69,6 +69,10 @@ interface MessageThreadProps {
   conversation: Conversation | null;
   contact: Contact | null;
   messages: Message[];
+  /** Account's active WhatsApp provider — governs the Meta-only 24h
+   *  session window and the "Send template" affordance. `null`/`meta`
+   *  preserves existing behavior exactly; only `'uazapi'` changes it. */
+  provider?: "meta" | "uazapi" | null;
   onMessagesLoaded: (messages: Message[]) => void;
   onNewMessage: (message: Message) => void;
   onUpdateMessage: (id: string, updates: Partial<Message>) => void;
@@ -157,6 +161,7 @@ export function MessageThread({
   conversation,
   contact,
   messages,
+  provider,
   onMessagesLoaded,
   onNewMessage,
   onUpdateMessage,
@@ -228,6 +233,16 @@ export function MessageThread({
 
   // 24-hour session timer
   const sessionInfo = useMemo(() => {
+    // UAZAPI is an unofficial/personal-style connection — it has no
+    // Meta Cloud API 24h free-form window. Text is always allowed via
+    // the composer, and there's no template requirement. Meta's own
+    // logic below is untouched for every other value of `provider`
+    // (including `undefined`/`null`, the pre-existing default before
+    // this prop existed).
+    if (provider === "uazapi") {
+      return { expired: false, remaining: "" };
+    }
+
     if (!messages.length) return { expired: false, remaining: "" };
 
     // Find last customer message
@@ -251,7 +266,7 @@ export function MessageThread({
         : tTimer("xmRemaining", { minutes: Math.floor(hoursLeft * 60) });
 
     return { expired, remaining };
-  }, [messages, tTimer]);
+  }, [messages, tTimer, provider]);
 
   // Store latest callback in a ref so fetchMessages doesn't need to
   // depend on `onMessagesLoaded` — otherwise parent re-renders cause
@@ -1153,6 +1168,7 @@ export function MessageThread({
       <MessageComposer
         conversationId={conversation.id}
         sessionExpired={sessionInfo.expired}
+        allowTemplates={provider !== "uazapi"}
         onSend={handleSend}
         onSendMedia={handleSendMedia}
         onSendInteractive={handleSendInteractive}

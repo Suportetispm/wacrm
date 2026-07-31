@@ -49,6 +49,22 @@ interface UazapiErrorBody {
   message_ptbr?: string
 }
 
+/**
+ * Preserves the real UAZAPI HTTP status code, so route handlers can
+ * tell "auth/not-found" (401/403/404 — the instance is gone/invalid)
+ * apart from any other failure (which stays a generic, transient-
+ * looking error). Previously this collapsed to a plain `Error`,
+ * losing the status entirely.
+ */
+export class UazapiHttpError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'UazapiHttpError'
+    this.status = status
+  }
+}
+
 async function throwUazapiError(response: Response, fallback: string): Promise<never> {
   let message = fallback
   try {
@@ -57,7 +73,7 @@ async function throwUazapiError(response: Response, fallback: string): Promise<n
   } catch {
     // response body wasn't JSON — keep the fallback
   }
-  throw new Error(message)
+  throw new UazapiHttpError(response.status, message)
 }
 
 // ============================================================
@@ -299,6 +315,16 @@ export interface ConfigureWebhookArgs {
  * Register the URL UAZAPI should POST inbound events to. Uses the
  * "simple mode" (no `action`/`id`) — one webhook per instance,
  * created or updated automatically.
+ *
+ * ETAPA 8.1H: both `token` (instance) and `admintoken` (admin) were
+ * tried against this account's configured server and both returned a
+ * real 401 from UAZAPI — the auth-header hypothesis is not confirmed
+ * either way. Reverted to `token`/`instanceToken` (the pre-8.1G
+ * state) rather than leaving `admintoken` in place on unconfirmed
+ * grounds. The real contract for this endpoint on THIS server is
+ * still unknown; see the ETAPA 8.1H diagnosis for next steps
+ * (checking the instance's own web panel / a real network trace)
+ * before trying another credential guess.
  */
 export async function configureWebhook(args: ConfigureWebhookArgs): Promise<void> {
   const { instanceToken, url, events, excludeMessages, signal } = args

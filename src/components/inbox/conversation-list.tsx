@@ -9,10 +9,12 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X } from "lucide-react";
+import { Search, ChevronDown, X, Plus } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { useCan } from "@/hooks/use-can";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -34,6 +36,8 @@ interface ConversationListProps {
    * or the tab was throttled. Optional so existing callers keep working.
    */
   resyncToken?: number;
+  /** Opens the "New conversation" modal — owned/rendered by the page. */
+  onOpenNewConversation: () => void;
 }
 
 const STATUS_COLORS: Record<ConversationStatus, string> = {
@@ -52,9 +56,14 @@ export function ConversationList({
   conversations,
   onConversationsLoaded,
   resyncToken = 0,
+  onOpenNewConversation,
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
-  
+  // Same capability the composer already gates on — viewers browse
+  // read-only, so they shouldn't see a button that would just fail
+  // the RLS insert.
+  const canSend = useCan("send-messages");
+
   const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = useMemo(() => [
     { label: t("filterAll"), value: "all" },
     { label: t("filterUnread"), value: "unread" },
@@ -226,6 +235,16 @@ export function ConversationList({
     <div className="flex h-full w-full flex-col border-r border-border bg-card lg:w-80">
       {/* Search + Filter */}
       <div className="space-y-2 border-b border-border p-3">
+        {canSend && (
+          <Button
+            onClick={onOpenNewConversation}
+            size="sm"
+            className="w-full justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground"
+          >
+            <Plus className="h-4 w-4" />
+            Nova conversa
+          </Button>
+        )}
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input

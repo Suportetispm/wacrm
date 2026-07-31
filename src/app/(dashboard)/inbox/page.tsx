@@ -13,6 +13,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
+import { NewConversationModal } from "@/components/inbox/new-conversation-modal";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -51,6 +52,8 @@ function InboxPageInner() {
   const [whatsappConnected, setWhatsappConnected] = useState<boolean | null>(
     null
   );
+  const [activeProvider, setActiveProvider] = useState<"meta" | "uazapi" | null>(null);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
   /**
    * Bumped whenever we want children (ConversationList, MessageThread)
    * to refetch from the DB — used as a safety net against missed
@@ -202,11 +205,12 @@ function InboxPageInner() {
 
       const { data } = await supabase
         .from("whatsapp_config")
-        .select("status")
+        .select("status, provider")
         .eq("account_id", accountId)
         .maybeSingle();
 
       setWhatsappConnected(data?.status === "connected");
+      setActiveProvider((data?.provider as "meta" | "uazapi" | undefined) ?? null);
     };
 
     checkConnection();
@@ -501,6 +505,19 @@ function InboxPageInner() {
     router.replace("/inbox", { scroll: false });
   }, [router]);
 
+  // Fired by NewConversationModal after it finds-or-creates a
+  // conversation. Prepends it in case the realtime INSERT hasn't
+  // landed yet, then reuses the existing select-and-navigate logic —
+  // no new selection code path.
+  const handleConversationCreated = useCallback(
+    (conv: Conversation) => {
+      setConversations((prev) =>
+        prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev],
+      );
+      handleSelectConversation(conv);
+    },
+    [handleSelectConversation],
+  );
 
   const handleMessagesLoaded = useCallback((loaded: Message[]) => {
     setMessages(loaded);
@@ -590,6 +607,7 @@ function InboxPageInner() {
             conversations={conversations}
             onConversationsLoaded={handleConversationsLoaded}
             resyncToken={resyncToken}
+            onOpenNewConversation={() => setNewConversationOpen(true)}
           />
         </div>
 
@@ -613,6 +631,7 @@ function InboxPageInner() {
             conversation={activeConversation}
             contact={activeContact}
             messages={messages}
+            provider={activeProvider}
             onMessagesLoaded={handleMessagesLoaded}
             onNewMessage={handleNewMessage}
             onUpdateMessage={handleUpdateMessage}
@@ -636,6 +655,12 @@ function InboxPageInner() {
           </div>
         )}
       </div>
+
+      <NewConversationModal
+        open={newConversationOpen}
+        onOpenChange={setNewConversationOpen}
+        onCreated={handleConversationCreated}
+      />
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { loadActiveWhatsAppConfig } from '@/lib/whatsapp/active-config'
-import { connectInstance } from '@/lib/whatsapp/uazapi-api'
+import { connectInstance, UazapiHttpError } from '@/lib/whatsapp/uazapi-api'
 
 const GENERIC_UAZAPI_ERROR = 'Unable to reach UAZAPI. Please try again.'
 
@@ -40,6 +40,12 @@ export async function POST() {
       '[uazapi/connect] connectInstance failed:',
       err instanceof Error ? err.name : 'UnknownError',
     )
+    if (err instanceof UazapiHttpError && [401, 403, 404].includes(err.status)) {
+      return NextResponse.json(
+        { error: 'UAZAPI instance not found or invalid.', code: 'instance_invalid' },
+        { status: 409 },
+      )
+    }
     return NextResponse.json({ error: GENERIC_UAZAPI_ERROR }, { status: 502 })
   }
 

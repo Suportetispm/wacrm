@@ -1,4 +1,6 @@
 import type { Conversation, Contact, Tag } from "@/types";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { isUniqueViolation } from "@/lib/contacts/dedupe";
 
 /**
  * Conversation select that embeds the contact plus its tags, so the Inbox
@@ -68,4 +70,54 @@ export function matchesContactFilters(
   }
 
   return true;
+}
+
+/**
+ * Find the account's existing conversation for a contact, or create one.
+ * Mirrors the private helper in `/api/whatsapp/send` (only reachable
+ * there by actually sending a message) so the "New conversation" modal
+ * can reuse the exact same find-or-create semantics without sending
+ * anything. Relies on RLS (`conversations_insert` requires agent+) —
+ * no service role, no new route.
+ */
+export async function findOrCreateConversationForContact(
+  db: SupabaseClient,
+  accountId: string,
+  userId: string,
+  contactId: string,
+): Promise<{ id: string; created: boolean } | null> {
+  const { data: existing } = await db
+    .from("conversations")
+    .select("id")
+    .eq("account_id", accountId)
+    .eq("contact_id", contactId)
+    .maybeSingle();
+
+  if (existing) return { id: existing.id, created: false };
+
+  const { data: created, error } = await db
+    .from("conversations")
+    .insert({ account_id: accountId, user_id: userId, contact_id: contactId })
+    .select("id")
+    .single();
+
+  if (!error) return { id: created.id, created: true };
+
+  // Race: another insert (or the inbound webhook) created the
+  // conversation between our SELECT and this INSERT. Backed by the
+  // UNIQUE index `idx_conversations_account_contact`
+  // (migration 036_conversation_contact_dedup.sql) — re-query and
+  // hand back the winner instead of failing the whole flow.
+  if (isUniqueViolation(error)) {
+    const { data: winner } = await db
+      .from("conversations")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("contact_id", contactId)
+      .maybeSingle();
+    if (winner) return { id: winner.id, created: false };
+  }
+
+  // Unrecoverable — some other error (permission, network, etc.).
+  return null;
 }
