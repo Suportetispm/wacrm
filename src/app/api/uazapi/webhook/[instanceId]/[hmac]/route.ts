@@ -1,22 +1,25 @@
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { verifyUazapiWebhookToken } from '@/lib/whatsapp/uazapi-webhook-auth'
-import { sanitizeWebhookPayload } from '@/lib/whatsapp/uazapi-webhook-sanitizer'
+import { parseInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-parser'
+import { persistInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-persist'
 
 // ============================================================
-// TEMPORARY — UAZAPI webhook payload capture.
+// UAZAPI inbound webhook — persists inbound text messages on
+// individual (non-group) chats. See docs/uazapi-webhook-progress.md
+// for the full history and current scope.
 //
-// This is NOT the persistence route. It exists only to safely learn
-// the real shape of a UAZAPI webhook event before writing any
-// contact/conversation/message logic — neither this project's code
-// nor UAZAPI's own docs site (a JS-rendered SPA we could not extract
-// a schema from) could confirm the payload format ahead of time.
-// Nothing is persisted here beyond one structural log line: no
-// contact, no conversation, no message, no media download, no
-// automations/flows/AI/outbound-webhook dispatch.
+// Scope for this stage: text only. Media, groups, fromMe, API-echoed
+// sends, and non-text content types are all out of scope —
+// parseInboundTextMessage returns null for all of it, and the route
+// acks 200 {status:'ignored'} without persisting anything.
 //
-// Remove this file (and uazapi-webhook-sanitizer.ts) once the real
-// contract is confirmed and the persistence route replaces it.
+// The shape-discovery diagnostics used to map UAZAPI's real payload
+// (structural sanitizer + dev-only field presence map) have been
+// removed now that the contract is confirmed and this route persists
+// for real — see git history for
+// uazapi-webhook-sanitizer.ts / uazapi-webhook-diagnostics.ts if
+// needed again for a future event type.
 // ============================================================
 
 // 256 KB is generous for a single WhatsApp message event's metadata
@@ -58,7 +61,7 @@ export async function POST(
   // id still isn't worth reading or logging anything for.
   const { data: config, error: configError } = await supabaseAdmin()
     .from('whatsapp_config')
-    .select('id')
+    .select('id, account_id, user_id')
     .eq('uazapi_instance_id', instanceId)
     .eq('provider', 'uazapi')
     .maybeSingle()
@@ -99,19 +102,42 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  const structure = sanitizeWebhookPayload(parsed)
+  // Everything out of this stage's scope (media, groups, fromMe, API
+  // echoes, non-text types) makes parseInboundTextMessage return null,
+  // leaving this branch an intentional no-op.
+  const parsedMessage = parseInboundTextMessage(parsed)
+  if (!parsedMessage) {
+    console.log('[uazapi/webhook:persist] ignored', {
+      instanceId: maskInstanceId(instanceId),
+    })
+    return NextResponse.json({ status: 'ignored' }, { status: 200 })
+  }
 
-  // The ONLY log line this route ever writes. No raw payload, no
-  // parsed values, no headers object, no HMAC/token, no full instance
-  // id — just shape/size metadata safe to keep in server logs.
-  console.log('[uazapi/webhook:capture] payload captured', {
-    instanceId: maskInstanceId(instanceId),
-    contentType,
-    bodyBytes: bodyResult.text.length,
-    structure,
+  const result = await persistInboundTextMessage({
+    db: supabaseAdmin(),
+    accountId: config.account_id,
+    configOwnerUserId: config.user_id,
+    parsed: parsedMessage,
   })
 
-  return NextResponse.json({ status: 'captured' }, { status: 200 })
+  if (result.outcome === 'error') {
+    // No phone/name/text/external id/raw DB error — only a small,
+    // fixed internal code, safe to keep in server logs.
+    console.error('[uazapi/webhook:persist] persistence_failed', {
+      instanceId: maskInstanceId(instanceId),
+      code: result.code,
+    })
+    // 5xx (not 200) so UAZAPI's own documented retry mechanism kicks
+    // in — acking 200 on a real failure would silently lose the
+    // message with no way to recover it. No DB detail in the body.
+    return NextResponse.json({ error: 'persistence_failed' }, { status: 503 })
+  }
+
+  console.log('[uazapi/webhook:persist]', result.outcome, {
+    instanceId: maskInstanceId(instanceId),
+  })
+
+  return NextResponse.json({ status: result.outcome }, { status: 200 })
 }
 
 async function readBodyWithLimit(

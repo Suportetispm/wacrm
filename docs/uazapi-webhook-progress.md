@@ -2,81 +2,64 @@
 
 > Documento de continuidade. Não contém tokens, segredos, HMAC, URLs completas, instanceId/accountId completos, cookies ou valores de headers sensíveis — apenas nomes, status HTTP, decisões técnicas e identificadores mascarados.
 
-## Objetivo atual
+## Status atual
 
-Implementar o recebimento de mensagens de clientes via webhook UAZAPI, para complementar o envio (já funcional: texto, imagem e PDF testados com sucesso, `provider` ativo = `uazapi`).
+**Webhook de recebimento habilitado e funcionando.** Uma mensagem de texto real, enviada de outro WhatsApp para o número conectado, foi recebida pelo webhook, persistida no CRM (contato, conversa e mensagem) e apareceu corretamente na Caixa de entrada. O bloqueio original de `POST /webhook` (401 persistente — ver "Histórico: bloqueio original" abaixo) foi superado: a causa raiz era o campo `enabled` do corpo do registro do webhook, que a UAZAPI assume como `false` por padrão quando omitido — `configureWebhook()` agora envia `enabled: true` explicitamente.
 
-## Etapas concluídas
+Resumido:
+- **Envio** — texto, imagem e PDF via UAZAPI: ✅ funcional (sessão anterior).
+- **Registro do webhook** (`POST /api/uazapi/webhook/register`) — ✅ funcional, `enabled: true` corrigido.
+- **Recebimento (texto, chat individual)** — ✅ funcional, mensagem real confirmada na Caixa de entrada.
+- **Mídia (imagem/áudio/vídeo/documento) recebida** — ❌ ainda não implementada.
+- **Localização, grupos, respostas citadas, status updates recebidos** — ❌ ainda não implementados.
+- **Tickets/filas/setores** — ❌ ainda não implementados (fora do escopo desta frente; ver conversa sobre análise geral do CRM).
 
-1. **Envio pelo CRM (concluído e testado)** — texto, imagem e PDF enviados com sucesso via UAZAPI; mensagens salvas corretamente no histórico.
-2. **"Nova conversa" na Caixa de entrada (concluído)** — botão + modal para iniciar atendimento manualmente (contato existente ou novo, telefone canônico `+<dígitos>`, sem duplicidade), composer liberado para texto simples sem exigir template Meta quando `provider==='uazapi'`.
-3. **Planejamento do webhook de recebimento** — análise completa do webhook Meta existente (contatos, conversas, mensagens, mídia, idempotência, isolamento por conta) como referência de padrão.
-4. **Segurança do webhook (concluído)** — mecanismo de autenticação via HMAC (`UAZAPI_WEBHOOK_SECRET` + `uazapi_instance_id`, recalculado por request, nunca armazenado — sem migration).
-5. **Rota de captura temporária (concluída)** — recebe e valida (HTTPS, Content-Type, tamanho, HMAC), mas **não persiste nada** — só loga uma representação estrutural sanitizada do payload (tipos/tamanhos/contagens, nunca valores).
-6. **Rota de registro do webhook (criada, não executada com sucesso ainda)** — endpoint autenticado (`requireRole('admin')`) que monta a URL completa só em memória e chama `configureWebhook()`.
-7. **Instalação do `cloudflared`** via `winget` — concluída.
-8. **Túnel Quick Tunnel** — foi ativado uma vez durante a sessão (ver "Estado atual do túnel" abaixo).
-9. **Diagnóstico de autenticação do `configureWebhook()`** — duas hipóteses testadas e descartadas (ver "Hipóteses descartadas").
+## Payload real do evento `messages` (mapeado)
 
-## Arquivos criados nesta sessão (UAZAPI, ao longo de todas as etapas)
+Envelope de raiz confirmado (sem `data`, diferente do que a documentação pública sugeria):
 
-- `src/lib/whatsapp/uazapi-webhook-auth.ts` — `computeUazapiWebhookToken` / `verifyUazapiWebhookToken` (HMAC).
-- `src/lib/whatsapp/uazapi-webhook-sanitizer.ts` — sanitizador estrutural para a captura temporária.
-- `src/app/api/uazapi/webhook/[instanceId]/[hmac]/route.ts` — rota de **captura temporária** (não persiste).
-- `src/app/api/uazapi/webhook/register/route.ts` — rota autenticada de **registro** do webhook na UAZAPI.
-- `src/components/inbox/new-conversation-modal.tsx` — modal "Nova conversa".
+```
+{ EventType, chat, chatSource, message, instanceName, owner, BaseUrl, token }
+```
 
-## Arquivos alterados nesta sessão
+Campos usados de `message`: `messageid`, `id`, `chatid`, `sender`, `senderName`, `sender_pn`, `fromMe`, `messageType`, `messageTimestamp`, `status`, `text`, `isGroup`, `wasSentByApi`, `content`.
 
-- `.env.local.example` — placeholder comentado de `UAZAPI_WEBHOOK_SECRET` (sem valor real).
-- `src/app/(dashboard)/inbox/page.tsx` — estado do modal "Nova conversa", `activeProvider`.
-- `src/app/api/uazapi/connect/route.ts` — classificação de erro `instance_invalid` (401/403/404 da UAZAPI).
-- `src/app/api/uazapi/status/route.ts` — idem.
-- `src/components/inbox/conversation-list.tsx` — botão "Nova conversa".
-- `src/components/inbox/message-composer.tsx` — prop `allowTemplates`.
-- `src/components/inbox/message-thread.tsx` — `sessionInfo` provider-aware (sem janela de 24h para UAZAPI), prop `provider`.
-- `src/components/settings/whatsapp-config.tsx` — fluxo completo de criar/reconectar/recriar instância UAZAPI, gate Meta vs UAZAPI.
-- `src/lib/inbox/conversations.ts` — `findOrCreateConversationForContact` (com recuperação de unique violation).
-- `src/lib/whatsapp/uazapi-api.ts` — `UazapiHttpError` (preserva status HTTP real); `configureWebhook()` passou por duas tentativas de correção e foi **revertido** ao estado original (ver abaixo).
+Campos usados de `chat`: `phone`, `name`, `lead_name`, `lead_fullName`, `wa_contactName`, `wa_chatid`, `wa_isGroup`.
 
-## Testes já realizados e resultados
+`instanceName`, `owner`, `BaseUrl` e `token` (a própria credencial da instância, ecoada de volta pela UAZAPI dentro do corpo do evento) nunca são lidos pelo parser.
+
+## Persistência (texto, chat individual)
+
+- **Parser puro** (`src/lib/whatsapp/uazapi-webhook-parser.ts`) — valida e extrai `externalMessageId`, `phone`, `name`, `text`, `occurredAt`; retorna `null` para grupos, `fromMe`, ecos da própria API, tipos não-texto ou payload inválido. Sem I/O.
+- **Persistência** (`src/lib/whatsapp/uazapi-webhook-persist.ts`) — find-or-create de contato/conversa (mesmo padrão do webhook Meta) + uma única chamada RPC (`uazapi_persist_inbound_text_message`) que insere a mensagem e avança a conversa (`unread_count`, `last_message_text`, `last_message_at`) atomicamente, com guarda de conflito em `(conversation_id, message_id)`.
+- **Migration 038** (`supabase/migrations/038_uazapi_message_dedup.sql`) — **aplicada**. Índice único `idx_messages_conversation_message_id`, função `public.uazapi_persist_inbound_text_message` (`SECURITY INVOKER`, só `service_role` pode executar), checagem de duplicidade pré-existente antes de criar o índice (não encontrou nenhuma).
+- **Rota** (`src/app/api/uazapi/webhook/[instanceId]/[hmac]/route.ts`) — responde `200 {status:'ignored'|'persisted'|'duplicate'}` ou `503 {error:'persistence_failed'}` (nunca 200 numa falha real, para permitir retry legítimo da UAZAPI). Logs reduzidos ao mínimo estrutural: `ignored` / `persisted` / `duplicate` / `persistence_failed` + `instanceId` mascarado — nunca telefone, nome, texto, payload, URL, token, HMAC ou IDs completos.
+- Os módulos temporários de descoberta de shape (`uazapi-webhook-sanitizer.ts`, `uazapi-webhook-diagnostics.ts`), usados só para mapear o payload real antes do parser existir, foram removidos.
+
+## Pendências conhecidas
+
+1. **Mídia recebida** (imagem/áudio/vídeo/documento) — não implementada. Precisa de download/verificação do arquivo antes de persistir `media_url`.
+2. **Tickets/filas/setores por cor de tag** — não implementado; discutido separadamente como melhoria geral do CRM (multi-empresa já existe via `accounts`; falta o conceito de fila/departamento).
+3. **Quick Tunnel é temporário** — `cloudflared tunnel --url http://localhost:3000` não é persistente. Toda vez que o processo for reiniciado, a URL pública muda e é necessário rodar `POST /api/uazapi/webhook/register` de novo com a nova `baseUrl` antes de qualquer teste real.
+
+---
+
+## Histórico: bloqueio original (resolvido)
+
+As seções abaixo documentam a investigação da sessão em que `POST /webhook` retornava 401 persistente — mantidas para contexto, já resolvidas.
+
+### Diagnóstico
+
+- 401 persistente com as duas credenciais conhecidas (`token`/instance e `admintoken`/admin) — todas as outras chamadas instance-scoped funcionavam normalmente com `token`.
+- Hipóteses descartadas: header errado (testado, mesmo 401); token de instância desatualizado (mesmo token funcionava em outras rotas); divergência de servidor (mesma URL usada com sucesso em outras chamadas); campos `enabled`/`webhookByEvents`/`webhookBase64` como usados por outro produto (Evolution API, não UAZAPI).
+- **Causa raiz real, encontrada depois**: não era o 401 em si que impedia o recebimento — o registro do webhook (`POST /webhook`) **retornava sucesso**, mas com `enabled` assumindo `false` por padrão (confirmado no schema `Webhook` de uma spec OpenAPI pública de referência), então a UAZAPI nunca disparava eventos para uma URL registrada mas desabilitada. A correção foi enviar `enabled: true` explicitamente em `configureWebhook()`.
+
+### Testes desta investigação
 
 | Teste | Resultado |
 |---|---|
-| Envio de texto via UAZAPI | ✅ sucesso |
-| Envio de imagem via UAZAPI | ✅ sucesso |
-| Envio de PDF via UAZAPI | ✅ sucesso |
+| Envio de texto/imagem/PDF via UAZAPI | ✅ sucesso |
 | Persistência das mensagens enviadas no histórico | ✅ sucesso |
-| `cloudflared --version` (pós-instalação) | ✅ `2026.7.3` |
-| `POST /api/uazapi/webhook/register` — tentativa 1 (header `token` + instance token) | ❌ rota local `502`, status externo UAZAPI **401** |
-| `POST /api/uazapi/webhook/register` — tentativa 2 (header `admintoken` + admin token) | ❌ rota local `502`, status externo UAZAPI **401** |
-| `npx tsc --noEmit` (checagem final da sessão) | ✅ passou |
-| `npx eslint` nos arquivos alterados (checagem final) | ✅ passou, 0 erros, 6 avisos pré-existentes de estilo (não bloqueantes) |
-
-## Erros encontrados
-
-- **401 persistente em `POST /webhook`** com as duas credenciais conhecidas do projeto (`token`/instance e `admintoken`/admin). Todas as outras chamadas instance-scoped (`/instance/connect`, `/instance/status`, `/send/text`, `/send/media`) funcionam normalmente com `token`.
-
-## Hipóteses descartadas
-
-1. ~~`configureWebhook()` usa o header errado (deveria ser `admintoken`, não `token`)~~ — testado, também deu 401. Descartada como causa isolada.
-2. ~~Token de instância desatualizado (stale) após recriação~~ — descartada: o mesmo token funciona em todas as outras chamadas instance-scoped, lido sempre fresco do banco.
-3. ~~Divergência de servidor (`UAZAPI_SERVER_URL` diferente do servidor onde a instância foi criada)~~ — improvável: mesma URL de servidor usada com sucesso em todas as outras chamadas de instância.
-4. Campos como `enabled`/`webhookByEvents`/`webhookBase64` — **não são da UAZAPI**, confirmados pertencerem a um produto diferente (Evolution API) encontrado durante a busca; descartados como fonte de referência.
-
-## Contexto relevante não resolvido
-
-- O servidor configurado (`UAZAPI_SERVER_URL`) é um **subdomínio próprio/dedicado**, não o servidor de teste público gratuito mencionado no `.env.local.example`. Instâncias dedicadas/self-hosted podem divergir da API genérica documentada publicamente — reforça a suspeita de que o contrato real de `/webhook` nesse servidor específico é diferente do assumido.
-- `events: ['messages']` continua **não confirmado** contra nenhuma fonte oficial acessível (site de docs é uma SPA sem conteúdo extraível via fetch; `/openapi.json`, `/swagger.json` e `/docs` no servidor ao vivo retornaram 404 ou redirecionamento sem schema).
-
-## Estado atual do túnel
-
-O Quick Tunnel (`cloudflared tunnel --url http://localhost:3000`) foi usado durante os testes de registro desta sessão. **Não presuma que ele continua ativo** — Quick Tunnels não são persistentes; se o processo do `cloudflared` foi encerrado (ex.: fechamento do terminal), a URL pública gerada não existe mais e uma nova precisará ser gerada na retomada. Nenhuma URL foi salva em nenhum arquivo do projeto.
-
-## Pendência exata para a próxima sessão
-
-Ainda não identificamos o contrato real de autenticação/payload do endpoint de configuração de webhook nesta instância UAZAPI específica (dedicada). `configureWebhook()` está **revertido** ao estado original (header `token` + `instanceToken`), aguardando confirmação real antes de qualquer nova tentativa.
-
-## Próximo passo recomendado
-
-Observar, pelo próprio painel web da instância UAZAPI (login do usuário, fora do alcance deste assistente), a aba Network do DevTools ao salvar uma configuração de webhook pela interface oficial — capturando **somente** método HTTP, path, nomes de headers, `Content-Type`, nomes dos campos do corpo e status HTTP da resposta (nunca valores). Esse é o próximo passo já proposto e ainda não executado (etapa 8.1I), pendente de o usuário realizá-lo e reportar os campos não sensíveis observados.
+| `POST /api/uazapi/webhook/register` sem `enabled: true` | ❌ registrava, mas webhook ficava desabilitado |
+| `POST /api/uazapi/webhook/register` com `enabled: true` | ✅ webhook habilitado, evento real recebido |
+| `GET /webhook` (consulta de configuração) | ✅ confirmou `enabled: false` antes da correção, depois `true` |

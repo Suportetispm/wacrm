@@ -13,6 +13,43 @@ function maskInstanceId(id: string): string {
 }
 
 /**
+ * Sanitized bucket for an external UAZAPI error message. Deliberately
+ * coarse — a small, fixed enum, never the original text — so a log
+ * line can carry a diagnostic signal without risking exposure of
+ * whatever the external body actually contained.
+ */
+type ExternalErrorCode =
+  | 'missing_token'
+  | 'invalid_token'
+  | 'unauthorized'
+  | 'forbidden'
+  | 'invalid_payload'
+  | 'unknown_external_error'
+
+/**
+ * Classifies an external error message into an `ExternalErrorCode` by
+ * keyword match only. `message` is lowercased and inspected in memory
+ * for this single call and then discarded — it is never logged,
+ * returned, or persisted anywhere; only the returned code is.
+ */
+function classifyExternalError(message: string | undefined): ExternalErrorCode {
+  if (!message) return 'unknown_external_error'
+  const lower = message.toLowerCase()
+
+  if (lower.includes('missing') && lower.includes('token')) return 'missing_token'
+  if (lower.includes('invalid') && lower.includes('token')) return 'invalid_token'
+  if (lower.includes('forbidden')) return 'forbidden'
+  if (lower.includes('unauthorized')) return 'unauthorized'
+  if (
+    lower.includes('invalid') &&
+    (lower.includes('payload') || lower.includes('action') || lower.includes('body'))
+  ) {
+    return 'invalid_payload'
+  }
+  return 'unknown_external_error'
+}
+
+/**
  * Validates `baseUrl` per ETAPA 8.1E rules: https only, hostname must
  * end exactly in `.trycloudflare.com` (with a real subdomain — the
  * bare suffix alone is rejected), no userinfo, no query/hash, no
@@ -141,15 +178,21 @@ export async function POST(request: Request) {
     })
   } catch (err) {
     // Never surface err.message (may embed the URL or the external
-    // response body) and never log the external response body itself
-    // — only the external HTTP status, when available, plus the
-    // masked instance id.
+    // response body) and never log the external response body itself.
+    // The raw message is only ever passed to classifyExternalError,
+    // which reads it in memory and returns a fixed sanitized code —
+    // that code, the external HTTP status, and the masked instance id
+    // are the only things logged.
     const externalStatus = err instanceof UazapiHttpError ? err.status : undefined
+    const externalCode = classifyExternalError(
+      err instanceof UazapiHttpError ? err.message : undefined,
+    )
     console.error(
       '[uazapi/webhook/register] configureWebhook failed',
       {
         instanceId: maskInstanceId(instanceId),
         externalStatus,
+        externalCode,
       },
     )
     return NextResponse.json({ error: 'webhook_registration_failed' }, { status: 502 })

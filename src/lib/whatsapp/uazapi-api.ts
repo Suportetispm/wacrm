@@ -336,7 +336,12 @@ export async function configureWebhook(args: ConfigureWebhookArgs): Promise<void
         'Content-Type': 'application/json',
         token: instanceToken,
       },
-      body: JSON.stringify({ url, events, excludeMessages: excludeMessages ?? [] }),
+      body: JSON.stringify({
+        enabled: true,
+        url,
+        events,
+        excludeMessages: excludeMessages ?? [],
+      }),
     },
     UAZAPI_DEFAULT_TIMEOUT_MS,
     signal,
@@ -344,6 +349,48 @@ export async function configureWebhook(args: ConfigureWebhookArgs): Promise<void
   if (!response.ok) {
     await throwUazapiError(response, `UAZAPI error: ${response.status}`)
   }
+}
+
+export interface GetWebhookConfigurationArgs {
+  instanceToken: string
+  signal?: AbortSignal
+}
+
+/** The subset of UAZAPI's `Webhook` object this app currently reads. */
+export interface UazapiWebhookConfig {
+  enabled: boolean
+  url: string
+  events: string[]
+}
+
+/**
+ * Read-only lookup of the instance's current webhook configuration.
+ * Sends no body, changes nothing server-side. UAZAPI's "simple mode"
+ * (the mode `configureWebhook` writes in) returns at most one entry;
+ * an empty array means no webhook has been configured yet.
+ */
+export async function getWebhookConfiguration(
+  args: GetWebhookConfigurationArgs,
+): Promise<UazapiWebhookConfig[]> {
+  const { instanceToken, signal } = args
+  const response = await uazapiFetch(
+    `${uazapiServerUrl()}/webhook`,
+    { headers: { token: instanceToken } },
+    UAZAPI_DEFAULT_TIMEOUT_MS,
+    signal,
+  )
+  if (!response.ok) {
+    await throwUazapiError(response, `UAZAPI error: ${response.status}`)
+  }
+  const data = await response.json()
+  if (!Array.isArray(data)) return []
+  return data.map((item) => ({
+    enabled: Boolean(item?.enabled),
+    url: typeof item?.url === 'string' ? item.url : '',
+    events: Array.isArray(item?.events)
+      ? item.events.filter((e: unknown): e is string => typeof e === 'string')
+      : [],
+  }))
 }
 
 // ============================================================
