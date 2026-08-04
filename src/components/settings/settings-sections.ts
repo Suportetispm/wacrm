@@ -3,6 +3,7 @@ import {
   FileText,
   KeyRound,
   LayoutGrid,
+  ListTodo,
   Palette,
   PlugZap,
   Shield,
@@ -31,6 +32,7 @@ export const SETTINGS_SECTIONS = [
   'quick-replies',
   'fields',
   'deals',
+  'queues',
   'members',
   'api',
 ] as const;
@@ -45,6 +47,8 @@ export interface SectionMeta {
   label: string;
   icon: LucideIcon;
   group: 'top' | 'account' | 'workspace';
+  /** Hidden from the rail (not just gated in the panel) for agent/viewer. */
+  adminOnly?: boolean;
 }
 
 export const SECTION_META: Record<SettingsSection, SectionMeta> = {
@@ -57,6 +61,7 @@ export const SECTION_META: Record<SettingsSection, SectionMeta> = {
   'quick-replies': { id: 'quick-replies', label: 'Quick replies', icon: Zap, group: 'workspace' },
   fields: { id: 'fields', label: 'Fields & tags', icon: Tags, group: 'workspace' },
   deals: { id: 'deals', label: 'Deals & currency', icon: Coins, group: 'workspace' },
+  queues: { id: 'queues', label: 'Queues', icon: ListTodo, group: 'workspace', adminOnly: true },
   members: { id: 'members', label: 'Team members', icon: UsersRound, group: 'workspace' },
   api: { id: 'api', label: 'API keys', icon: KeyRound, group: 'workspace' },
 };

@@ -654,3 +654,94 @@ export interface QuickReply {
   created_at: string;
   updated_at: string;
 }
+
+// ============================================================
+// Queues, queue members, tickets (etapa 9.1-9.3; supabase/migrations/
+// 039_queues_and_members.sql, 040_tickets.sql, 041_tickets_hotfix.sql)
+// ============================================================
+
+export type QueueFailureAction = 'stay_in_queue' | 'remove_queue' | 'transfer_queue';
+export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface Queue {
+  id: string;
+  account_id: string;
+  name: string;
+  color: string;
+  is_active: boolean;
+  greeting_message: string | null;
+  out_of_hours_message: string | null;
+  chatbot_max_attempts: number;
+  chatbot_failure_message: string | null;
+  chatbot_failure_action: QueueFailureAction;
+  chatbot_failure_queue_id: string | null;
+  auto_assignment_enabled: boolean;
+  default_wait_minutes: number;
+  default_priority: TicketPriority;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+}
+
+export type QueueMemberRole = 'agent' | 'supervisor';
+
+export interface QueueMember {
+  id: string;
+  account_id: string;
+  queue_id: string;
+  user_id: string;
+  role_in_queue: QueueMemberRole;
+  weight: number;
+  individual_wait_minutes: number | null;
+  max_active_tickets: number | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  /** Hydrated by routes that embed profile info for display. */
+  profile?: { full_name: string; email: string; avatar_url: string | null } | null;
+}
+
+export type TicketStatus = 'open' | 'pending' | 'closed';
+
+export interface Ticket {
+  id: string;
+  account_id: string;
+  conversation_id: string;
+  queue_id: string | null;
+  ticket_number: number;
+  status: TicketStatus;
+  priority: TicketPriority;
+  assigned_agent_id: string | null;
+  opened_at: string;
+  pending_at: string | null;
+  closed_at: string | null;
+  closed_by: string | null;
+  close_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Hydrated by list/detail routes. */
+  queue?: { id: string; name: string; color: string } | null;
+  contact?: { id: string; name: string | null; phone: string } | null;
+}
+
+export type TicketEventType =
+  | 'created'
+  | 'status_changed'
+  | 'priority_changed'
+  | 'assigned'
+  | 'transferred_queue'
+  | 'transferred_agent'
+  | 'closed'
+  | 'reopened';
+
+export interface TicketEvent {
+  id: string;
+  account_id: string;
+  ticket_id: string;
+  event_type: TicketEventType;
+  actor_user_id: string | null;
+  from_value: string | null;
+  to_value: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
