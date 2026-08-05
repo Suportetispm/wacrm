@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { decrypt } from '@/lib/whatsapp/encryption'
+import { downloadMessageMedia, estimateBase64DecodedBytes, UazapiHttpError } from '@/lib/whatsapp/uazapi-api'
 import { verifyUazapiWebhookToken } from '@/lib/whatsapp/uazapi-webhook-auth'
 import { parseInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-parser'
 import { persistInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-persist'
@@ -118,6 +120,148 @@ function logIgnoredMessageShape(parsed: unknown, instanceId: string): void {
   })
 }
 
+// ============================================================
+// TEMPORARY (ETAPA 8.3 FASE 2.8) — one-shot, dev-only real-call test
+// of the official `downloadMessageMedia` wrapper (uazapi-api.ts)
+// against the next real DocumentMessage this webhook receives. The
+// endpoint contract is confirmed (`POST /message/download`, body
+// field `id` — see docs/uazapi-webhook-progress.md); this stage only
+// verifies the wrapper itself returns a real, decodable file, so no
+// more candidate-guessing (no `messageid`, `chatid`, hand-rolled URL,
+// mediaKey, directPath, or hashes). Disabled outright in production,
+// fires at most once per server process, and never touches the
+// definitive text parser/persist path. Logs only structural/presence
+// data — never the token, id, url, base64, or file bytes. Remove this
+// whole block once confirmed and a real document parser/persist path
+// exists.
+// ============================================================
+
+let documentDownloadProbeFired = false
+
+function maskId(id: string): string {
+  if (id.length <= 8) return '*'.repeat(id.length)
+  return `${id.slice(0, 4)}…${id.slice(-4)}`
+}
+
+/** Strips URLs and long token/id/hash-looking runs out of a
+ * server-supplied error message before it's logged — the text itself
+ * is useful for debugging, but may echo back request values that
+ * shouldn't appear in logs verbatim. */
+function sanitizeValidationMessage(raw: string): string {
+  let s = raw.slice(0, 500)
+  s = s.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>')
+  s = s.replace(/[A-Za-z0-9+/_=-]{20,}/g, '<redacted>')
+  s = s.replace(/\+?\d{8,}/g, '<redacted>')
+  return s.slice(0, 200)
+}
+
+/** Keeps only characters valid in a MIME type, truncated — the raw
+ * value is server-supplied and never trusted verbatim into a log line. */
+function sanitizeMimeType(raw: string): string {
+  return raw.replace(/[^a-zA-Z0-9/.+-]/g, '').slice(0, 100)
+}
+
+type FileSignature = 'pdf' | 'zip_or_office' | 'image' | 'unknown'
+
+/** Classifies a file by its first few bytes only. The bytes themselves
+ * are never logged — only this one classification label. */
+function classifyFileSignature(bytes: Buffer): FileSignature {
+  if (bytes.length >= 5 && bytes.subarray(0, 5).toString('ascii') === '%PDF-') return 'pdf'
+  if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) return 'zip_or_office'
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image'
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image'
+  if (bytes.length >= 4 && bytes.subarray(0, 4).toString('ascii') === 'GIF8') return 'image'
+  if (bytes.length >= 4 && bytes.subarray(0, 4).toString('ascii') === 'RIFF') return 'image'
+  return 'unknown'
+}
+
+/**
+ * Decodes only the first 12 base64 characters (→ 9 decoded bytes) —
+ * comfortably enough for every signature checked above, and nowhere
+ * near the full payload. Callers must discard the result immediately
+ * after classification; it is never logged, saved, or forwarded.
+ */
+function decodeLeadingBytesForSignatureCheck(base64: string): Buffer {
+  return Buffer.from(base64.slice(0, 12), 'base64')
+}
+
+/**
+ * Real call to the official `downloadMessageMedia` wrapper against
+ * the next inbound DocumentMessage, using exactly `{ id: message.id,
+ * returnBase64: true }` per the confirmed docs. Fires once per
+ * process. The decoded file content is discarded immediately after
+ * the signature check — never saved to disk, forwarded, or logged.
+ */
+async function probeDocumentDownloadOnce(
+  message: Record<string, unknown>,
+  instanceId: string,
+  configId: string,
+): Promise<void> {
+  if (process.env.NODE_ENV === 'production') return
+  if (documentDownloadProbeFired) return
+  if (message.messageType !== 'DocumentMessage') return
+  documentDownloadProbeFired = true // claim the single run before any await
+
+  const id = message.id
+  if (typeof id !== 'string') {
+    console.log('[uazapi/webhook:TEMP-download-probe] message.id is not a string, skipping')
+    return
+  }
+  const maskedId = maskId(id)
+
+  let instanceToken: string | undefined
+  try {
+    const { data: row, error } = await supabaseAdmin()
+      .from('whatsapp_config')
+      .select('uazapi_instance_token')
+      .eq('id', configId)
+      .maybeSingle()
+
+    if (error || !row?.uazapi_instance_token) {
+      console.log('[uazapi/webhook:TEMP-download-probe] no encrypted token found for instance')
+      return
+    }
+    instanceToken = decrypt(row.uazapi_instance_token)
+
+    const result = await downloadMessageMedia({ instanceToken, id, returnBase64: true })
+
+    const log: Record<string, unknown> = {
+      instanceId: maskInstanceId(instanceId),
+      id: maskedId,
+      callCompleted: true,
+      hasFileUrl: Boolean(result.fileUrl),
+      hasMimetype: Boolean(result.mimetype),
+      hasBase64Data: Boolean(result.base64Data),
+      hasTranscription: Boolean(result.transcription),
+      mimetype: result.mimetype ? sanitizeMimeType(result.mimetype) : undefined,
+    }
+
+    if (result.base64Data) {
+      log.decodedByteSize = estimateBase64DecodedBytes(result.base64Data)
+      log.signature = classifyFileSignature(decodeLeadingBytesForSignatureCheck(result.base64Data))
+    }
+
+    console.log('[uazapi/webhook:TEMP-download-probe] result', log)
+  } catch (err) {
+    const base = { instanceId: maskInstanceId(instanceId), id: maskedId, callCompleted: false }
+    if (err instanceof UazapiHttpError) {
+      console.log('[uazapi/webhook:TEMP-download-probe] error', {
+        ...base,
+        errorClass: err.name,
+        status: err.status,
+        message: sanitizeValidationMessage(err.message),
+      })
+    } else {
+      console.log('[uazapi/webhook:TEMP-download-probe] error', {
+        ...base,
+        errorClass: err instanceof Error ? err.name : 'unknown',
+      })
+    }
+  } finally {
+    instanceToken = undefined
+  }
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ instanceId: string; hmac: string }> },
@@ -192,6 +336,9 @@ export async function POST(
   const parsedMessage = parseInboundTextMessage(parsed)
   if (!parsedMessage) {
     logIgnoredMessageShape(parsed, instanceId)
+    if (isRecordLocal(parsed) && isRecordLocal(parsed.message)) {
+      await probeDocumentDownloadOnce(parsed.message, instanceId, config.id)
+    }
     console.log('[uazapi/webhook:persist] ignored', {
       instanceId: maskInstanceId(instanceId),
     })
