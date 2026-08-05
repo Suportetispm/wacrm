@@ -934,6 +934,7 @@
         "no": "No"
       },
       "addStep": "Add step",
+      "delete": "Delete",
       "config": {
         "messageText": "Message text",
         "placeholderMessageText": "Hi! Thanks for reaching out…",

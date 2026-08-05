@@ -934,6 +934,7 @@
         "no": "Não"
       },
       "addStep": "Adicionar etapa",
+      "delete": "Excluir",
       "config": {
         "messageText": "Texto da mensagem",
         "placeholderMessageText": "Olá! Obrigado por entrar em contato…",
