@@ -14,12 +14,13 @@ import { persistInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-persist
 // parseInboundTextMessage returns null for all of it, and the route
 // acks 200 {status:'ignored'} without persisting anything.
 //
-// The shape-discovery diagnostics used to map UAZAPI's real payload
-// (structural sanitizer + dev-only field presence map) have been
-// removed now that the contract is confirmed and this route persists
-// for real — see git history for
-// uazapi-webhook-sanitizer.ts / uazapi-webhook-diagnostics.ts if
-// needed again for a future event type.
+// ETAPA 8.3 FASE 1 — TEMPORARY shape-discovery diagnostic re-added
+// below (see `logIgnoredMessageShape`) to map UAZAPI's real inbound
+// document-message payload before writing a parser for it. Structural
+// only (field NAMES and value TYPES, never field values — except the
+// short messageType/type enum). Remove once the document shape is
+// confirmed and the dedicated parser exists — see
+// docs/uazapi-webhook-progress.md.
 // ============================================================
 
 // 256 KB is generous for a single WhatsApp message event's metadata
@@ -32,6 +33,89 @@ const HMAC_HEX_PATTERN = /^[0-9a-f]{64}$/i
 function maskInstanceId(id: string): string {
   if (id.length <= 6) return '***'
   return `${id.slice(0, 3)}…${id.slice(-2)}`
+}
+
+// Local to this route — deliberately NOT imported from the parser
+// module (etapa 8.3 rule: keep this temporary diagnostic isolated
+// from the text-parsing code path it's investigating around).
+function isRecordLocal(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function fieldType(value: unknown): string {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
+}
+
+/** Key name → value TYPE only (never the value). One flat level, no
+ * recursion into nested objects — a nested `describeFields` call
+ * previously produced objects 3-4 levels deep, which `console.log`'s
+ * default inspect depth (2) silently collapsed to `[Array]`/`[Object]`,
+ * hiding exactly the fields (inside `message.content`) this diagnostic
+ * exists to find. Flat objects/arrays of strings or booleans, like
+ * this returns, never hit that depth limit. */
+function describeFieldTypes(record: Record<string, unknown>): Record<string, string> {
+  const types: Record<string, string> = {}
+  for (const [key, value] of Object.entries(record)) {
+    types[key] = fieldType(value)
+  }
+  return types
+}
+
+/** Keyword match over collected key names only — never over values. */
+function anyKeyMatches(keys: string[], needles: string[]): boolean {
+  const lowered = keys.map((k) => k.toLowerCase())
+  return needles.some((needle) => lowered.some((k) => k.includes(needle)))
+}
+
+/** Presence-only flags for the media metadata fields this stage needs
+ * to locate — computed from `message.content`'s key NAMES only, never
+ * its values. */
+function contentPresenceFlags(contentKeys: string[]) {
+  return {
+    hasFileName: anyKeyMatches(contentKeys, ['filename', 'file_name']),
+    hasMimeType: anyKeyMatches(contentKeys, ['mime']),
+    hasFileSize: anyKeyMatches(contentKeys, ['filesize', 'file_size', 'size', 'length']),
+    hasUrl: anyKeyMatches(contentKeys, ['url']),
+    hasMediaId: anyKeyMatches(contentKeys, ['mediaid', 'media_id']),
+    hasDirectPath: anyKeyMatches(contentKeys, ['directpath', 'direct_path']),
+    hasCaption: anyKeyMatches(contentKeys, ['caption']),
+    hasThumbnail: anyKeyMatches(contentKeys, ['thumbnail', 'thumb']),
+  }
+}
+
+// TEMPORARY (etapa 8.3 FASE 1) — logs field NAMES and value TYPES only
+// for an inbound event this stage doesn't parse yet, so the real
+// document-message shape (specifically `message.content`, where a
+// media message's metadata lives) can be mapped without guessing.
+// Never logs phone, name, message content, caption, full URL, base64,
+// token, HMAC, instance token, or full ids — only key names, value
+// TYPES, and boolean presence flags.
+function logIgnoredMessageShape(parsed: unknown, instanceId: string): void {
+  if (!isRecordLocal(parsed) || parsed.EventType !== 'messages') return
+  const message = isRecordLocal(parsed.message) ? parsed.message : undefined
+  if (!message) return
+
+  const topKeys = Object.keys(parsed).sort()
+  const messageKeys = Object.keys(message).sort()
+  const messageFieldTypes = describeFieldTypes(message)
+
+  const content = message.content
+  const contentKeys = isRecordLocal(content) ? Object.keys(content).sort() : []
+  const contentFieldTypes = isRecordLocal(content) ? describeFieldTypes(content) : undefined
+
+  console.log('[uazapi/webhook:shape-discovery]', {
+    instanceId: maskInstanceId(instanceId),
+    topKeys,
+    messageType: message.messageType,
+    type: message.type,
+    messageKeys,
+    messageFieldTypes,
+    contentKeys,
+    contentFieldTypes,
+    contentPresence: contentPresenceFlags(contentKeys),
+  })
 }
 
 export async function POST(
@@ -107,6 +191,7 @@ export async function POST(
   // leaving this branch an intentional no-op.
   const parsedMessage = parseInboundTextMessage(parsed)
   if (!parsedMessage) {
+    logIgnoredMessageShape(parsed, instanceId)
     console.log('[uazapi/webhook:persist] ignored', {
       instanceId: maskInstanceId(instanceId),
     })
