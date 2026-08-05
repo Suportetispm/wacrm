@@ -601,3 +601,151 @@ export async function sendInteractiveList(
   const data = await response.json()
   return { messageId: String(data.messageid ?? data.id) }
 }
+
+// ============================================================
+// Message actions
+// ============================================================
+
+/**
+ * The real limit that matters: the actual file content, once decoded.
+ * Exported so callers (e.g. a persistence flow validating a declared
+ * `fileLength` before even downloading) can check against the exact
+ * same ceiling instead of hardcoding a second copy of it.
+ */
+export const UAZAPI_MEDIA_DOWNLOAD_MAX_DECODED_BYTES = 20 * 1024 * 1024
+
+/**
+ * Raw HTTP/JSON body cap — deliberately larger than the decoded-bytes
+ * limit above. Base64 inflates by ~4/3, so a file at the 20 MB decoded
+ * ceiling needs ~26.7 MB of base64 text alone; capping the raw body at
+ * the same 20 MB as the decoded limit (the previous version of this
+ * file did that) would reject every legitimate file anywhere near the
+ * ceiling before the decoded-size check ever got a chance to run. 28
+ * MB leaves a small margin on top of the ~26.7 MB floor for JSON
+ * framing (field names, fileURL, mimetype, transcription).
+ */
+const UAZAPI_MEDIA_DOWNLOAD_MAX_BODY_BYTES = 28 * 1024 * 1024
+
+/**
+ * Reads a response body with an upper bound on size, so a caller
+ * requesting `returnBase64: true` on a large file can't force
+ * unbounded memory growth. Content-Length is checked first when
+ * present, but never trusted alone (absent on chunked transfers, and
+ * a misbehaving server could send a smaller value than the real
+ * body) — the actual decoded text length is always re-checked too.
+ */
+async function readBoundedJson(response: Response, maxBytes: number): Promise<unknown> {
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error(`UAZAPI response exceeded the ${maxBytes}-byte limit`)
+  }
+  const text = await response.text()
+  if (text.length > maxBytes) {
+    throw new Error(`UAZAPI response exceeded the ${maxBytes}-byte limit`)
+  }
+  return text ? JSON.parse(text) : null
+}
+
+/**
+ * Exact decoded byte length of a base64 string, derived from its
+ * length and padding — no decode/allocation needed. Lets a caller
+ * reject an oversized `base64Data` field without ever holding a
+ * buffer as large as the limit it's enforcing.
+ */
+export function estimateBase64DecodedBytes(base64: string): number {
+  const len = base64.length
+  if (len === 0) return 0
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return Math.floor((len * 3) / 4) - padding
+}
+
+export interface DownloadMessageMediaArgs {
+  instanceToken: string
+  /** UAZAPI message id whose media should be downloaded. */
+  id: string
+  /** Also return the file content inline as base64. */
+  returnBase64?: boolean
+  /** For audio messages: true = MP3, false = OGG. */
+  generateMp3?: boolean
+  /** Save and return a public URL for the file. */
+  returnLink?: boolean
+  /** Transcribe audio messages to text. */
+  transcribe?: boolean
+  /** OpenAI API key for transcription; omit to use the one saved on the instance. */
+  openaiApiKey?: string
+  /** Download the media from the quoted/replied-to message instead of this one. */
+  downloadQuoted?: boolean
+  signal?: AbortSignal
+}
+
+export interface DownloadMessageMediaResult {
+  fileUrl?: string
+  mimetype?: string
+  base64Data?: string
+  transcription?: string
+}
+
+/**
+ * Wraps `POST /message/download`. Returns whatever combination of
+ * `fileURL` / `base64Data` / `transcription` UAZAPI sends back for
+ * the requested flags. Does no persistence, no disk writes, and logs
+ * nothing — the media URL, any base64 payload, and the instance token
+ * must never end up in logs or error messages.
+ */
+export async function downloadMessageMedia(
+  args: DownloadMessageMediaArgs,
+): Promise<DownloadMessageMediaResult> {
+  const {
+    instanceToken,
+    id,
+    returnBase64,
+    generateMp3,
+    returnLink,
+    transcribe,
+    openaiApiKey,
+    downloadQuoted,
+    signal,
+  } = args
+  const response = await uazapiFetch(
+    `${uazapiServerUrl()}/message/download`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        token: instanceToken,
+      },
+      body: JSON.stringify({
+        id,
+        ...(returnBase64 !== undefined ? { return_base64: returnBase64 } : {}),
+        ...(generateMp3 !== undefined ? { generate_mp3: generateMp3 } : {}),
+        ...(returnLink !== undefined ? { return_link: returnLink } : {}),
+        ...(transcribe !== undefined ? { transcribe } : {}),
+        ...(openaiApiKey ? { openai_apikey: openaiApiKey } : {}),
+        ...(downloadQuoted !== undefined ? { download_quoted: downloadQuoted } : {}),
+      }),
+    },
+    UAZAPI_MEDIA_TIMEOUT_MS,
+    signal,
+  )
+  if (!response.ok) {
+    await throwUazapiError(response, `UAZAPI error: ${response.status}`)
+  }
+  const data = (await readBoundedJson(response, UAZAPI_MEDIA_DOWNLOAD_MAX_BODY_BYTES)) as
+    | Record<string, unknown>
+    | null
+  const base64Data = typeof data?.base64Data === 'string' ? data.base64Data : undefined
+  if (
+    base64Data &&
+    estimateBase64DecodedBytes(base64Data) > UAZAPI_MEDIA_DOWNLOAD_MAX_DECODED_BYTES
+  ) {
+    throw new Error(
+      `UAZAPI media download exceeded the ${UAZAPI_MEDIA_DOWNLOAD_MAX_DECODED_BYTES}-byte limit after decoding`,
+    )
+  }
+  return {
+    fileUrl: typeof data?.fileURL === 'string' ? data.fileURL : undefined,
+    mimetype: typeof data?.mimetype === 'string' ? data.mimetype : undefined,
+    base64Data,
+    transcription: typeof data?.transcription === 'string' ? data.transcription : undefined,
+  }
+}
