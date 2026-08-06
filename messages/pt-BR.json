@@ -218,7 +218,12 @@
       "interactiveReply": "[Resposta interativa]",
       "unsupported": "[Tipo de mensagem não suportado]",
       "aiBadge": "IA",
-      "aiBadgeTitle": "Enviado automaticamente pelo assistente de IA"
+      "aiBadgeTitle": "Enviado automaticamente pelo assistente de IA",
+      "viewDocument": "Visualizar",
+      "downloadDocument": "Baixar",
+      "loadingDocument": "Carregando…",
+      "documentAccessDenied": "Você não tem acesso a este documento.",
+      "documentLoadError": "Não foi possível carregar o documento. Tente novamente."
     },
     "actions": {
       "reply": "Responder",

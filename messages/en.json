@@ -218,7 +218,12 @@
       "interactiveReply": "[Interactive reply]",
       "unsupported": "[Unsupported message type]",
       "aiBadge": "AI",
-      "aiBadgeTitle": "Sent automatically by the AI assistant"
+      "aiBadgeTitle": "Sent automatically by the AI assistant",
+      "viewDocument": "View",
+      "downloadDocument": "Download",
+      "loadingDocument": "Loading…",
+      "documentAccessDenied": "You don't have access to this document.",
+      "documentLoadError": "Couldn't load the document. Try again."
     },
     "actions": {
       "reply": "Reply",

@@ -226,6 +226,17 @@ export interface Message {
   content_type: ContentType;
   content_text?: string;
   media_url?: string;
+  /**
+   * Private Storage path for an inbound document (PDF) received via the
+   * UAZAPI webhook — never a fetchable URL by itself. Resolve it into a
+   * short-lived signed URL through `GET /api/messages/[messageId]/attachment`
+   * rather than reading it directly. Migration 042.
+   */
+  media_storage_path?: string | null;
+  media_file_name?: string | null;
+  media_mime_type?: string | null;
+  media_file_size?: number | null;
+  media_metadata?: Record<string, unknown> | null;
   template_name?: string;
   message_id?: string;
   status: MessageStatus;

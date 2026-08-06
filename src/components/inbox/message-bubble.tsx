@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { cn } from "@/lib/utils";
+import { cn, formatFileSize, sanitizeFileName } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
   Clock,
@@ -14,8 +14,12 @@ import {
   ImageOff,
   CornerDownLeft,
   Sparkles,
+  Eye,
+  Download,
+  Loader2,
 } from "lucide-react";
 import { format } from "date-fns";
+import { toast } from "sonner";
 import { ReplyQuote } from "./reply-quote";
 import { MessageReactions } from "./message-reactions";
 import { InteractivePreview } from "@/components/interactive/interactive-preview";
@@ -119,6 +123,123 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   );
 }
 
+/**
+ * Inbound PDF whose bytes live in the private `whatsapp-attachments`
+ * bucket (migration 042) — `message.media_storage_path` is never a
+ * fetchable URL by itself. Each click asks
+ * `GET /api/messages/[messageId]/attachment` for a fresh 60s signed
+ * URL; nothing is cached or reused across clicks, and the URL never
+ * enters the DOM/state before the click that consumes it.
+ */
+function DocumentAttachment({
+  messageId,
+  fileName,
+  fileSize,
+  t,
+}: {
+  messageId: string;
+  fileName: string | null;
+  fileSize: number | null;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [busyAction, setBusyAction] = useState<"view" | "download" | null>(null);
+
+  const fetchAttachment = useCallback(async (): Promise<{
+    url: string;
+    fileName: string | null;
+  } | null> => {
+    const res = await fetch(`/api/messages/${messageId}/attachment`);
+    if (!res.ok) {
+      toast.error(
+        t(res.status === 401 || res.status === 403 ? "documentAccessDenied" : "documentLoadError"),
+      );
+      return null;
+    }
+    return res.json();
+  }, [messageId, t]);
+
+  const handleView = useCallback(async () => {
+    setBusyAction("view");
+    try {
+      const attachment = await fetchAttachment();
+      if (attachment) {
+        window.open(attachment.url, "_blank", "noopener,noreferrer");
+      }
+    } catch {
+      toast.error(t("documentLoadError"));
+    } finally {
+      setBusyAction(null);
+    }
+  }, [fetchAttachment, t]);
+
+  const handleDownload = useCallback(async () => {
+    setBusyAction("download");
+    try {
+      const attachment = await fetchAttachment();
+      if (!attachment) return;
+      const fileRes = await fetch(attachment.url);
+      if (!fileRes.ok) throw new Error("download failed");
+      const blob = await fileRes.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = attachment.fileName ?? fileName ?? "document.pdf";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      toast.error(t("documentLoadError"));
+    } finally {
+      setBusyAction(null);
+    }
+  }, [fetchAttachment, fileName, t]);
+
+  const displayName = sanitizeFileName(fileName || t("document"));
+  const displaySize = typeof fileSize === "number" ? formatFileSize(fileSize) : null;
+  const disabled = busyAction !== null;
+
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm">
+      <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate">{displayName}</p>
+        {displaySize && <p className="text-[10px] text-muted-foreground">{displaySize}</p>}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={handleView}
+          disabled={disabled}
+          aria-label={busyAction === "view" ? t("loadingDocument") : t("viewDocument")}
+          title={busyAction === "view" ? t("loadingDocument") : t("viewDocument")}
+          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+        >
+          {busyAction === "view" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Eye className="h-4 w-4" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={disabled}
+          aria-label={busyAction === "download" ? t("loadingDocument") : t("downloadDocument")}
+          title={busyAction === "download" ? t("loadingDocument") : t("downloadDocument")}
+          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+        >
+          {busyAction === "download" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof useTranslations> }) {
   switch (message.content_type) {
     case "text":
@@ -176,6 +297,19 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
       );
 
     case "document":
+      // Inbound PDFs (migration 042) live behind a private storage
+      // path — never a directly fetchable URL. Legacy/outbound
+      // documents keep using the public `media_url` link below.
+      if (message.media_storage_path) {
+        return (
+          <DocumentAttachment
+            messageId={message.id}
+            fileName={message.media_file_name ?? message.content_text ?? null}
+            fileSize={message.media_file_size ?? null}
+            t={t}
+          />
+        );
+      }
       if (!message.media_url) {
         return <MediaUnavailable label={message.content_text || t("document")} t={t} />;
       }

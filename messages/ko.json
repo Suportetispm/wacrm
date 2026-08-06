@@ -218,7 +218,12 @@
       "interactiveReply": "[인터랙티브 응답]",
       "unsupported": "[지원되지 않는 메시지 형식]",
       "aiBadge": "AI",
-      "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함"
+      "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함",
+      "viewDocument": "보기",
+      "downloadDocument": "다운로드",
+      "loadingDocument": "불러오는 중…",
+      "documentAccessDenied": "이 문서에 접근할 수 없습니다.",
+      "documentLoadError": "문서를 불러오지 못했습니다. 다시 시도해 주세요."
     },
     "actions": {
       "reply": "답장",
