@@ -144,7 +144,8 @@
       "clearAll": "Clear all",
       "noConversations": "No conversations found",
       "noMessagesYet": "No messages yet",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "unreadCount": "{count} unread {count, plural, =1 {message} other {messages}}"
     },
     "messageThread": {
       "backToConversations": "Back to conversations",
@@ -168,7 +169,8 @@
       "selectConversation": "Select a conversation",
       "selectConversationHint": "Choose a conversation from the left to start messaging",
       "today": "Today",
-      "yesterday": "Yesterday"
+      "yesterday": "Yesterday",
+      "markReadFailed": "Couldn't mark this conversation as read."
     },
     "sessionTimer": {
       "expired": "Expired",

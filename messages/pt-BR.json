@@ -144,7 +144,8 @@
       "clearAll": "Limpar tudo",
       "noConversations": "Nenhuma conversa encontrada",
       "noMessagesYet": "Nenhuma mensagem ainda",
-      "unknown": "Desconhecido"
+      "unknown": "Desconhecido",
+      "unreadCount": "{count} {count, plural, =1 {mensagem não lida} other {mensagens não lidas}}"
     },
     "messageThread": {
       "backToConversations": "Voltar para conversas",
@@ -168,7 +169,8 @@
       "selectConversation": "Selecione uma conversa",
       "selectConversationHint": "Escolha uma conversa à esquerda para começar a enviar mensagens",
       "today": "Hoje",
-      "yesterday": "Ontem"
+      "yesterday": "Ontem",
+      "markReadFailed": "Não foi possível marcar esta conversa como lida."
     },
     "sessionTimer": {
       "expired": "Expirado",

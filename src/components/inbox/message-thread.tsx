@@ -50,6 +50,7 @@ import { deleteAccountMedia } from "@/lib/storage/upload-media";
 import { TemplatePicker } from "./template-picker";
 import { AiThreadBanner } from "./ai-thread-banner";
 import { buildReplyPreview } from "./reply-quote";
+import { markConversationRead } from "@/lib/inbox/mark-read";
 import { toast } from "sonner";
 
 interface ReplyDraft {
@@ -431,26 +432,54 @@ export function MessageThread({
     setReplyTo(null);
   }, [conversationId]);
 
-  // Reset the server-side unread_count to 0 whenever an unread count
-  // surfaces on the active conversation — covers both (a) opening a
-  // conversation that had unread messages and (b) new messages arriving
-  // while the user is already viewing the thread (webhook server-bumps
-  // unread_count to N+1; the realtime UPDATE propagates it into the
-  // client, which re-runs this effect and flips it back to 0).
+  // Reset the server-side unread_count to 0 (via the mark_conversation_read
+  // RPC, migration 044) whenever an unread count surfaces on the active
+  // conversation — covers both (a) opening a conversation that had unread
+  // messages and (b) new messages arriving while the user is already
+  // viewing the thread (webhook server-bumps unread_count to N+1; the
+  // realtime UPDATE propagates it into the client, which re-runs this
+  // effect and flips it back to 0).
   //
-  // Guarding on hasUnread prevents the eq-update loop: once unread_count
-  // is 0 the condition is false, so no further UPDATE is issued.
+  // RPC-based instead of the old raw `.update({unread_count:0})`: that
+  // relied purely on RLS (`conversations_update` requires role >= agent),
+  // so a `viewer`-role account's write silently matched 0 rows — not an
+  // error, just quietly nothing — and the only failure surface was a
+  // console.error nobody would see. mark_conversation_read explicitly
+  // allows every real account role (reading isn't an operational change)
+  // and a genuine failure now reaches the user via toast.
+  //
+  // Guarding on hasUnread prevents the call-loop: once unread_count is 0
+  // the condition is false, so no further call is issued.
+  // `markReadInFlightRef` additionally guards against firing twice for
+  // the SAME conversation if this effect re-runs before the previous
+  // call has settled (React Strict Mode's double-invoke, or a rapid
+  // resyncToken bump) — harmless either way since the RPC is idempotent,
+  // but pointless duplicate network calls are worth skipping.
+  const markReadInFlightRef = useRef<string | null>(null);
   useEffect(() => {
     if (!conversationId || !hasUnread) return;
-    const supabase = createClient();
-    supabase
-      .from("conversations")
-      .update({ unread_count: 0 })
-      .eq("id", conversationId)
-      .then(({ error }) => {
-        if (error) console.error("Failed to reset unread_count:", error);
-      });
-  }, [conversationId, hasUnread]);
+    if (markReadInFlightRef.current === conversationId) return;
+    markReadInFlightRef.current = conversationId;
+    let cancelled = false;
+
+    (async () => {
+      const supabase = createClient();
+      const result = await markConversationRead(supabase, conversationId);
+      if (cancelled) return;
+      if (result.outcome === "error") {
+        console.error("Failed to mark conversation as read:", result.error);
+        toast.error(t("markReadFailed"));
+      }
+    })().finally(() => {
+      if (markReadInFlightRef.current === conversationId) {
+        markReadInFlightRef.current = null;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, hasUnread, t]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {

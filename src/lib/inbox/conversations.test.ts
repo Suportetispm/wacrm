@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   matchesContactFilters,
   normalizeConversation,
+  reconcileLoadedConversations,
 } from "./conversations";
 import type { Conversation } from "@/types";
 
@@ -141,5 +142,59 @@ describe("normalizeConversation", () => {
     };
     // A contactless row passes through untouched (consumers use `?.`).
     expect(normalizeConversation(raw).contact).toBeNull();
+  });
+});
+
+function conv(id: string, unread_count: number): Conversation {
+  return {
+    id,
+    user_id: "u1",
+    contact_id: `ct-${id}`,
+    status: "open",
+    unread_count,
+    created_at: "",
+    updated_at: "",
+  };
+}
+
+describe("reconcileLoadedConversations", () => {
+  it("forces unread_count to 0 for the active conversation, even when the fresh row still carries a stale nonzero count", () => {
+    const loaded = [conv("a", 3), conv("b", 1)];
+
+    const result = reconcileLoadedConversations(loaded, "a");
+
+    expect(result.find((c) => c.id === "a")?.unread_count).toBe(0);
+  });
+
+  it("leaves every other conversation's unread_count exactly as fetched — a genuinely new message elsewhere is never masked", () => {
+    const loaded = [conv("a", 3), conv("b", 1)];
+
+    const result = reconcileLoadedConversations(loaded, "a");
+
+    expect(result.find((c) => c.id === "b")?.unread_count).toBe(1);
+  });
+
+  it("is a no-op when there is no active conversation", () => {
+    const loaded = [conv("a", 3), conv("b", 1)];
+
+    const result = reconcileLoadedConversations(loaded, null);
+
+    expect(result).toEqual(loaded);
+  });
+
+  it("is a no-op when the active conversation id matches nothing in the loaded list", () => {
+    const loaded = [conv("a", 3), conv("b", 1)];
+
+    const result = reconcileLoadedConversations(loaded, "does-not-exist");
+
+    expect(result).toEqual(loaded);
+  });
+
+  it("does not mutate the input array", () => {
+    const loaded = [conv("a", 3)];
+
+    reconcileLoadedConversations(loaded, "a");
+
+    expect(loaded[0].unread_count).toBe(3);
   });
 });

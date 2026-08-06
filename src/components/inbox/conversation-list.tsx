@@ -46,6 +46,22 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
   closed: "bg-muted-foreground",
 };
 
+/**
+ * Keys into the SAME `t()` labels the filter dropdown already uses
+ * (filterOpen/filterPending/filterClosed) — reused rather than
+ * duplicated so the status dot's tooltip/aria-label and the filter
+ * menu can never drift apart. This dot is a STATUS indicator
+ * (open/pending/closed) — unrelated to, and never affected by, the
+ * unread badge next to it. It stays visible regardless of
+ * unread_count, including right after a conversation is opened and
+ * its unread badge disappears.
+ */
+const STATUS_LABEL_KEYS: Record<ConversationStatus, "filterOpen" | "filterPending" | "filterClosed"> = {
+  open: "filterOpen",
+  pending: "filterPending",
+  closed: "filterClosed",
+};
+
 
 
 type InboxFilter = ConversationStatus | "all" | "unread";
@@ -504,7 +520,11 @@ function ConversationItem({
           </p>
           <div className="flex shrink-0 items-center gap-1.5">
             {conversation.unread_count > 0 && (
-              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+              <span
+                className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
+                role="status"
+                aria-label={t("unreadCount", { count: conversation.unread_count })}
+              >
                 {conversation.unread_count}
               </span>
             )}
@@ -513,7 +533,9 @@ function ConversationItem({
                 "h-2 w-2 rounded-full",
                 STATUS_COLORS[conversation.status]
               )}
-              title={conversation.status}
+              role="img"
+              aria-label={t(STATUS_LABEL_KEYS[conversation.status])}
+              title={t(STATUS_LABEL_KEYS[conversation.status])}
             />
           </div>
         </div>

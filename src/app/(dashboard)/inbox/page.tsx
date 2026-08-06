@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
   normalizeConversation,
+  reconcileLoadedConversations,
 } from "@/lib/inbox/conversations";
 import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
@@ -406,7 +407,21 @@ function InboxPageInner() {
 
   const handleConversationsLoaded = useCallback(
     (loaded: Conversation[]) => {
-      setConversations(loaded);
+      // FASE 5A root cause: unlike handleConversationEvent's realtime
+      // UPDATE branch (which forces unread_count: 0 for whichever
+      // conversation is active), this resync path used to do a blind
+      // `setConversations(loaded)` — a raw DB snapshot that can still
+      // carry the pre-reset unread_count if this fetch lands inside the
+      // window between opening a conversation and the server-side
+      // mark_conversation_read call actually landing. reconcileLoadedConversations
+      // applies the exact same isActive suppression here, so a resync
+      // (tab visibility regain, WS reconnect, manual refresh) can no
+      // longer reintroduce a stale badge for the conversation the user
+      // already has open. See its doc comment for why this never hides
+      // a genuinely new message.
+      setConversations(
+        reconcileLoadedConversations(loaded, activeConversation?.id),
+      );
       // Resolve a pending deep-link here rather than in an effect — this
       // is an event handler, so the setState calls below are allowed by
       // react-hooks/set-state-in-effect. Runs once per ?c=<id> URL value

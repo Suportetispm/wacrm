@@ -44,6 +44,45 @@ export function normalizeConversations(
   return rows.map(normalizeConversation);
 }
 
+/**
+ * Reconciles a freshly-fetched conversation list (a resync — tab
+ * visibility regain, WS reconnect, manual refresh button) against the
+ * conversation the user currently has open.
+ *
+ * Why this is needed: `mark_conversation_read` (migration 044) is
+ * fire-and-forget from the UI's perspective — there's always a window
+ * between the user opening a conversation and the server-side
+ * `unread_count` actually reaching 0. If a resync's full refetch lands
+ * inside that window, the raw DB row it returns can still carry the
+ * pre-reset (nonzero) count; passing it straight to UI state would
+ * reintroduce a badge the user just cleared. `handleConversationEvent`
+ * (the realtime UPDATE handler in the inbox page) already avoids this
+ * exact problem for individual events by forcing `unread_count: 0` for
+ * whichever conversation is active; this function applies the same
+ * rule to a full-list resync.
+ *
+ * This ONLY ever touches the active conversation's row, and only its
+ * `unread_count` — every other conversation's row (and every other
+ * field of the active one) passes through exactly as fetched. It does
+ * NOT hide a genuinely new message: the message itself arrives via the
+ * separate messages realtime channel regardless of this list's badge,
+ * and the server-side `unread_count` still gets corrected by another
+ * `mark_conversation_read` call the next time the reset effect re-fires
+ * (it watches `activeConversation.unread_count`, a different piece of
+ * state this function never touches) — this function only ever
+ * suppresses the cosmetic badge for a conversation the user is already
+ * looking at, never the underlying data.
+ */
+export function reconcileLoadedConversations(
+  loaded: Conversation[],
+  activeConversationId: string | null | undefined,
+): Conversation[] {
+  if (!activeConversationId) return loaded;
+  return loaded.map((c) =>
+    c.id === activeConversationId ? { ...c, unread_count: 0 } : c,
+  );
+}
+
 export interface ContactFilters {
   /** Tag ids; a conversation matches if its contact has ANY of them (OR). */
   tagIds: string[];
