@@ -27,6 +27,7 @@ import {
   RefreshCw,
   PanelRightOpen,
   PanelRightClose,
+  Loader2,
 } from "lucide-react";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -140,10 +141,15 @@ function groupMessagesByDate(messages: Message[]) {
   return groups;
 }
 
+// Migration 045 (FASE 5C): substitui o antigo open/pending/closed por
+// cinco valores. `label` é o sufixo da chave de tradução (t(`status${label}`)),
+// não o texto exibido — as strings visíveis vêm sempre de messages/*.json.
 const STATUS_OPTIONS: { label: string; value: ConversationStatus; color: string }[] = [
-  { label: "Open", value: "open", color: "text-primary" },
   { label: "Pending", value: "pending", color: "text-amber-400" },
+  { label: "InProgress", value: "in_progress", color: "text-primary" },
+  { label: "WaitingCustomer", value: "waiting_customer", color: "text-blue-400" },
   { label: "Closed", value: "closed", color: "text-muted-foreground" },
+  { label: "Finalized", value: "finalized", color: "text-emerald-500" },
 ];
 
 /**
@@ -665,19 +671,47 @@ export function MessageThread({
     [conversation, onNewMessage, onUpdateMessage],
   );
 
+  // Estado otimista com rollback: a UI reflete a mudança na hora
+  // (onStatusChange chamado antes do await), mas se o UPDATE falhar a
+  // conversa volta ao status anterior e um toast avisa o erro — ao
+  // contrário do comportamento antigo, que nunca checava `error` e
+  // sempre chamava onStatusChange mesmo quando o write falhava
+  // silenciosamente. `statusChangeInFlightRef` evita que um segundo
+  // clique dispare uma troca concorrente enquanto a primeira ainda
+  // está em voo. Só altera `status` — nunca unread_count,
+  // assigned_agent_id ou qualquer campo de ticket.
+  const statusChangeInFlightRef = useRef(false);
+  const [statusUpdating, setStatusUpdating] = useState(false);
+
   const handleStatusChange = useCallback(
     async (status: ConversationStatus) => {
       if (!conversation) return;
+      if (status === conversation.status) return;
+      if (statusChangeInFlightRef.current) return;
+
+      statusChangeInFlightRef.current = true;
+      setStatusUpdating(true);
+      const previousStatus = conversation.status;
+      const conversationId = conversation.id;
+
+      onStatusChange(conversationId, status);
 
       const supabase = createClient();
-      await supabase
+      const { error } = await supabase
         .from("conversations")
         .update({ status })
-        .eq("id", conversation.id);
+        .eq("id", conversationId);
 
-      onStatusChange(conversation.id, status);
+      if (error) {
+        console.error("Failed to update conversation status:", error);
+        toast.error(t("statusUpdateFailed"));
+        onStatusChange(conversationId, previousStatus);
+      }
+
+      statusChangeInFlightRef.current = false;
+      setStatusUpdating(false);
     },
-    [conversation, onStatusChange]
+    [conversation, onStatusChange, t]
   );
 
   const handleOpenTemplates = useCallback(() => {
@@ -1011,12 +1045,19 @@ export function MessageThread({
 
           {/* Status dropdown */}
           <DropdownMenu>
-            <DropdownMenuTrigger className={cn(
-                  "inline-flex items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted",
+            <DropdownMenuTrigger
+              disabled={statusUpdating}
+              aria-busy={statusUpdating}
+              className={cn(
+                  "inline-flex items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted disabled:cursor-wait disabled:opacity-70",
                   currentStatus?.color ?? "text-muted-foreground"
                 )}>
                 {currentStatus ? t(`status${currentStatus.label}`) : t("status")}
-                <ChevronDown className="h-3 w-3" />
+                {statusUpdating ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" />
+                )}
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"

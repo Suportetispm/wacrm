@@ -155,7 +155,18 @@ export interface ContactNote {
   created_at: string;
 }
 
-export type ConversationStatus = 'open' | 'pending' | 'closed';
+// Migration 045 (FASE 5C): substitui o antigo open/pending/closed por
+// cinco valores mais granulares. Conversão de dados: open -> in_progress,
+// pending/closed mantêm o nome. 'waiting_customer' e 'finalized' são
+// estados novos, sem equivalente anterior. tickets.status NÃO foi
+// alterado — continua com três valores, sem sincronização com este
+// campo (ver auditoria da FASE 5A/5C).
+export type ConversationStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'waiting_customer'
+  | 'closed'
+  | 'finalized';
 
 export interface Conversation {
   id: string;

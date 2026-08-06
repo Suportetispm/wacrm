@@ -1,4 +1,4 @@
-import type { Conversation, Contact, Tag } from "@/types";
+import type { Conversation, ConversationStatus, Contact, Tag } from "@/types";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isUniqueViolation } from "@/lib/contacts/dedupe";
 
@@ -109,6 +109,65 @@ export function matchesContactFilters(
   }
 
   return true;
+}
+
+export interface InboxFilters {
+  /** `"all"` é um no-op — qualquer outro valor restringe pelo status exato. */
+  status: ConversationStatus | "all";
+  /** Quando true, só conversas com unread_count > 0 passam. */
+  unreadOnly: boolean;
+  /** `null` = sem filtro; `"unassigned"` = sem responsável; qualquer outro valor = id do responsável exato. */
+  assigneeId: string | "unassigned" | null;
+}
+
+/**
+ * FASE 5C — filtros combinados da inbox (aba de status + não lidas +
+ * responsável), independentes dos filtros de contato
+ * ({@link matchesContactFilters}) e da busca textual (que continuam
+ * vivendo só no componente, por operarem sobre `contact`/texto livre
+ * em vez de campos simples da própria conversa).
+ */
+export function matchesInboxFilters(
+  conversation: Conversation,
+  filters: InboxFilters,
+): boolean {
+  if (filters.status !== "all" && conversation.status !== filters.status) {
+    return false;
+  }
+  if (filters.unreadOnly && conversation.unread_count <= 0) {
+    return false;
+  }
+  if (filters.assigneeId === "unassigned") {
+    if (conversation.assigned_agent_id) return false;
+  } else if (filters.assigneeId) {
+    if (conversation.assigned_agent_id !== filters.assigneeId) return false;
+  }
+  return true;
+}
+
+/**
+ * Contagem por status entre TODAS as conversas carregadas — usada nas
+ * abas da inbox. Deliberadamente não aplica busca/etiquetas/empresa/
+ * responsável/não-lidas: contagem de aba reflete quantas conversas
+ * existem em cada status, não quantas sobram depois de filtros
+ * adicionais (mesmo padrão de contador de pasta de e-mail). Tenancy já
+ * é respeitada porque `conversations` só contém linhas que a RLS
+ * liberou para o usuário atual.
+ */
+export function countConversationsByStatus(
+  conversations: Conversation[],
+): Record<ConversationStatus, number> {
+  const counts: Record<ConversationStatus, number> = {
+    pending: 0,
+    in_progress: 0,
+    waiting_customer: 0,
+    closed: 0,
+    finalized: 0,
+  };
+  for (const c of conversations) {
+    counts[c.status] += 1;
+  }
+  return counts;
 }
 
 /**

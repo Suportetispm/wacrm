@@ -43,16 +43,24 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
     messagesToday,
     messagesYesterday,
   ] = await Promise.all([
-    db.from('conversations').select('id', { count: 'exact', head: true }).eq('status', 'open'),
+    // Migration 045 (FASE 5C): o antigo status único 'open' virou dois
+    // valores ('in_progress' e 'waiting_customer') — ambos ainda
+    // representam uma conversa ativa/em andamento (não fechada, não
+    // finalizada), então "conversas ativas" agora soma os dois em vez
+    // de comparar contra um único valor.
     db
       .from('conversations')
       .select('id', { count: 'exact', head: true })
-      .eq('status', 'open')
+      .in('status', ['in_progress', 'waiting_customer']),
+    db
+      .from('conversations')
+      .select('id', { count: 'exact', head: true })
+      .in('status', ['in_progress', 'waiting_customer'])
       .gte('created_at', todayStart),
     db
       .from('conversations')
       .select('id', { count: 'exact', head: true })
-      .eq('status', 'open')
+      .in('status', ['in_progress', 'waiting_customer'])
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
     db.from('contacts').select('id', { count: 'exact', head: true }).gte('created_at', todayStart),

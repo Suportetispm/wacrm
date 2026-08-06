@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  countConversationsByStatus,
   matchesContactFilters,
+  matchesInboxFilters,
   normalizeConversation,
   reconcileLoadedConversations,
 } from "./conversations";
-import type { Conversation } from "@/types";
+import type { Conversation, ConversationStatus } from "@/types";
 
 function makeConversation(
   contact: Partial<Conversation["contact"]> | null,
@@ -13,7 +15,7 @@ function makeConversation(
     id: "c1",
     user_id: "u1",
     contact_id: "ct1",
-    status: "open",
+    status: "pending",
     unread_count: 0,
     created_at: "",
     updated_at: "",
@@ -107,7 +109,7 @@ describe("normalizeConversation", () => {
       id: "c1",
       user_id: "u1",
       contact_id: "ct1",
-      status: "open" as const,
+      status: "pending" as const,
       unread_count: 0,
       created_at: "",
       updated_at: "",
@@ -134,7 +136,7 @@ describe("normalizeConversation", () => {
       id: "c1",
       user_id: "u1",
       contact_id: "ct1",
-      status: "open" as const,
+      status: "pending" as const,
       unread_count: 0,
       created_at: "",
       updated_at: "",
@@ -150,7 +152,7 @@ function conv(id: string, unread_count: number): Conversation {
     id,
     user_id: "u1",
     contact_id: `ct-${id}`,
-    status: "open",
+    status: "pending",
     unread_count,
     created_at: "",
     updated_at: "",
@@ -196,5 +198,141 @@ describe("reconcileLoadedConversations", () => {
     reconcileLoadedConversations(loaded, "a");
 
     expect(loaded[0].unread_count).toBe(3);
+  });
+});
+
+function fullConv(overrides: Partial<Conversation> = {}): Conversation {
+  return {
+    id: "c1",
+    user_id: "u1",
+    contact_id: "ct1",
+    status: "pending",
+    unread_count: 0,
+    assigned_agent_id: undefined,
+    created_at: "",
+    updated_at: "",
+    ...overrides,
+  };
+}
+
+describe("matchesInboxFilters", () => {
+  it("status 'all' matches every status", () => {
+    for (const status of ["pending", "in_progress", "waiting_customer", "closed", "finalized"] as ConversationStatus[]) {
+      expect(
+        matchesInboxFilters(fullConv({ status }), { status: "all", unreadOnly: false, assigneeId: null }),
+      ).toBe(true);
+    }
+  });
+
+  it("filters by exact status", () => {
+    expect(
+      matchesInboxFilters(fullConv({ status: "in_progress" }), {
+        status: "in_progress",
+        unreadOnly: false,
+        assigneeId: null,
+      }),
+    ).toBe(true);
+    expect(
+      matchesInboxFilters(fullConv({ status: "pending" }), {
+        status: "in_progress",
+        unreadOnly: false,
+        assigneeId: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("unreadOnly excludes conversations with unread_count 0, independent of status", () => {
+    expect(
+      matchesInboxFilters(fullConv({ unread_count: 0 }), { status: "all", unreadOnly: true, assigneeId: null }),
+    ).toBe(false);
+    expect(
+      matchesInboxFilters(fullConv({ unread_count: 2 }), { status: "all", unreadOnly: true, assigneeId: null }),
+    ).toBe(true);
+  });
+
+  it("changing status never affects the unread filter and vice versa (independent axes)", () => {
+    const conv = fullConv({ status: "closed", unread_count: 3 });
+    expect(
+      matchesInboxFilters(conv, { status: "closed", unreadOnly: true, assigneeId: null }),
+    ).toBe(true);
+    expect(
+      matchesInboxFilters({ ...conv, status: "finalized" }, { status: "closed", unreadOnly: true, assigneeId: null }),
+    ).toBe(false);
+    // Unread filter alone is unaffected by the status change above.
+    expect(
+      matchesInboxFilters({ ...conv, status: "finalized" }, { status: "all", unreadOnly: true, assigneeId: null }),
+    ).toBe(true);
+  });
+
+  it("'unassigned' matches only conversations with no assigned_agent_id", () => {
+    expect(
+      matchesInboxFilters(fullConv({ assigned_agent_id: undefined }), {
+        status: "all",
+        unreadOnly: false,
+        assigneeId: "unassigned",
+      }),
+    ).toBe(true);
+    expect(
+      matchesInboxFilters(fullConv({ assigned_agent_id: "agent-1" }), {
+        status: "all",
+        unreadOnly: false,
+        assigneeId: "unassigned",
+      }),
+    ).toBe(false);
+  });
+
+  it("a specific assigneeId matches only that exact agent", () => {
+    expect(
+      matchesInboxFilters(fullConv({ assigned_agent_id: "agent-1" }), {
+        status: "all",
+        unreadOnly: false,
+        assigneeId: "agent-1",
+      }),
+    ).toBe(true);
+    expect(
+      matchesInboxFilters(fullConv({ assigned_agent_id: "agent-2" }), {
+        status: "all",
+        unreadOnly: false,
+        assigneeId: "agent-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("combines all three filters (AND)", () => {
+    const conv = fullConv({ status: "in_progress", unread_count: 1, assigned_agent_id: "agent-1" });
+    expect(
+      matchesInboxFilters(conv, { status: "in_progress", unreadOnly: true, assigneeId: "agent-1" }),
+    ).toBe(true);
+    expect(
+      matchesInboxFilters(conv, { status: "in_progress", unreadOnly: true, assigneeId: "agent-2" }),
+    ).toBe(false);
+  });
+});
+
+describe("countConversationsByStatus", () => {
+  it("counts each status independently, ignoring search/tag/company/unread/assignee", () => {
+    const counts = countConversationsByStatus([
+      fullConv({ status: "pending" }),
+      fullConv({ status: "pending" }),
+      fullConv({ status: "in_progress" }),
+      fullConv({ status: "closed" }),
+    ]);
+    expect(counts).toEqual({
+      pending: 2,
+      in_progress: 1,
+      waiting_customer: 0,
+      closed: 1,
+      finalized: 0,
+    });
+  });
+
+  it("returns all-zero counts for an empty list", () => {
+    expect(countConversationsByStatus([])).toEqual({
+      pending: 0,
+      in_progress: 0,
+      waiting_customer: 0,
+      closed: 0,
+      finalized: 0,
+    });
   });
 });

@@ -17,7 +17,10 @@ import {
   CONVERSATION_SELECT,
   normalizeConversation,
 } from '@/lib/inbox/conversations';
-import { serializeConversation } from '@/lib/api/v1/conversations';
+import {
+  fromPublicConversationStatusFilter,
+  serializeConversation,
+} from '@/lib/api/v1/conversations';
 import type { Conversation } from '@/types';
 
 export async function GET(request: Request) {
@@ -33,7 +36,17 @@ export async function GET(request: Request) {
       .select(CONVERSATION_SELECT)
       .eq('account_id', ctx.accountId);
 
-    if (status) query = query.eq('status', status);
+    if (status) {
+      // Migration 045 (FASE 5C): traduz o filtro público (3 valores)
+      // para o(s) status interno(s) correspondente(s) (5 valores) — ver
+      // o comentário de fromPublicConversationStatusFilter. Um valor não
+      // reconhecido cai no `.eq()` direto, igual ao comportamento antes
+      // deste shim (nunca casa nenhuma linha real).
+      const internalStatuses = fromPublicConversationStatusFilter(status);
+      query = internalStatuses
+        ? query.in('status', internalStatuses)
+        : query.eq('status', status);
+    }
     if (contactId) query = query.eq('contact_id', contactId);
 
     query = query

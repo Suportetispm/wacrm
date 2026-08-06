@@ -8,12 +8,59 @@
 // endpoint's response vocabulary.
 // ============================================================
 
-import type { Conversation, Message } from '@/types';
+import type { Conversation, ConversationStatus, Message } from '@/types';
+
+// Migration 045 (FASE 5C) ampliou o modelo interno de status de
+// conversa de três valores (open/pending/closed) para cinco. O
+// contrato público v1 (docs/public-api.md) continua documentando só
+// os três valores originais — este shim traduz nos dois sentidos, para
+// nenhum consumidor externo existente quebrar. Os dois estados novos
+// ('in_progress' e 'waiting_customer') mapeiam para o antigo 'open'
+// (ambos são "conversa ativa, não fechada" no contrato antigo);
+// 'finalized' mapeia para o antigo 'closed' (estado terminal). Um
+// possível v2 da API pode expor os cinco valores diretamente.
+export type PublicConversationStatus = 'open' | 'pending' | 'closed';
+
+const INTERNAL_TO_PUBLIC_STATUS: Record<ConversationStatus, PublicConversationStatus> = {
+  pending: 'pending',
+  in_progress: 'open',
+  waiting_customer: 'open',
+  closed: 'closed',
+  finalized: 'closed',
+};
+
+/** Traduz um status interno (5 valores) para o status público v1 (3 valores). */
+export function toPublicConversationStatus(status: ConversationStatus): PublicConversationStatus {
+  return INTERNAL_TO_PUBLIC_STATUS[status];
+}
+
+const PUBLIC_TO_INTERNAL_STATUSES: Record<PublicConversationStatus, ConversationStatus[]> = {
+  open: ['in_progress', 'waiting_customer'],
+  pending: ['pending'],
+  closed: ['closed', 'finalized'],
+};
+
+/**
+ * Traduz um valor de filtro `?status=` recebido de um cliente v1 para
+ * o(s) valor(es) interno(s) correspondente(s). Retorna `null` para
+ * qualquer valor fora dos três documentados — o chamador decide o que
+ * fazer com um filtro não reconhecido (hoje, repassar como está, que
+ * preserva o comportamento de "nunca casa nenhuma linha" que a rota
+ * já tinha para um valor inválido antes deste shim existir).
+ */
+export function fromPublicConversationStatusFilter(
+  publicStatus: string,
+): ConversationStatus[] | null {
+  if (publicStatus === 'open' || publicStatus === 'pending' || publicStatus === 'closed') {
+    return PUBLIC_TO_INTERNAL_STATUSES[publicStatus];
+  }
+  return null;
+}
 
 export interface ApiConversation {
   id: string;
   contact_id: string;
-  status: string;
+  status: PublicConversationStatus;
   assigned_agent_id: string | null;
   last_message_text: string | null;
   last_message_at: string | null;
@@ -55,7 +102,7 @@ export function serializeConversation(conv: Conversation): ApiConversation {
   return {
     id: conv.id,
     contact_id: conv.contact_id,
-    status: conv.status,
+    status: toPublicConversationStatus(conv.status),
     assigned_agent_id: conv.assigned_agent_id ?? null,
     last_message_text: conv.last_message_text ?? null,
     last_message_at: conv.last_message_at ?? null,

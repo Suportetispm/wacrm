@@ -206,6 +206,15 @@ List conversations, newest first. Scope: `conversations:read`.
 Paginated. Optional filters: `?status=` (`open` / `pending` / `closed`)
 and `?contact_id=`. Each conversation embeds its contact + tags.
 
+The CRM's internal conversation status model has five values (`pending`,
+`in_progress`, `waiting_customer`, `closed`, `finalized`), but this
+endpoint's `status` field and `?status=` filter intentionally stay on
+the original three values so existing integrations keep working
+unchanged: `in_progress` and `waiting_customer` both surface as `open`
+(still an active, unfinished conversation), and `finalized` surfaces as
+`closed` (a terminal state). A future API version may expose the finer
+five-value model directly.
+
 ### `GET /api/v1/conversations/{id}`
 
 Read one conversation. Scope: `conversations:read`. `404` if it belongs

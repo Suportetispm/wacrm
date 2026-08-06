@@ -4,12 +4,28 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
+  countConversationsByStatus,
   matchesContactFilters,
+  matchesInboxFilters,
   normalizeConversations,
+  type InboxFilters,
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
-import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X, Plus } from "lucide-react";
+import type { Conversation, ConversationStatus, Profile, Tag } from "@/types";
+import {
+  Search,
+  ChevronDown,
+  X,
+  Plus,
+  AlertCircle,
+  Clock,
+  MessageCircle,
+  Hourglass,
+  CheckCircle2,
+  CheckCheck,
+  UserX,
+  Users,
+} from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
@@ -20,6 +36,7 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -40,31 +57,39 @@ interface ConversationListProps {
   onOpenNewConversation: () => void;
 }
 
-const STATUS_COLORS: Record<ConversationStatus, string> = {
-  open: "bg-primary",
-  pending: "bg-amber-500",
-  closed: "bg-muted-foreground",
+// Migration 045 (FASE 5C): ícone + cor por status, para o badge nunca
+// depender só de cor (acessibilidade — item explícito do pedido).
+// `labelKey` aponta para uma chave própria deste namespace
+// (Inbox.conversationList), separada das chaves usadas pelo dropdown
+// de status em message-thread.tsx (Inbox.messageThread) — os dois
+// componentes usam namespaces de tradução diferentes e não podem
+// compartilhar chave.
+const STATUS_BADGE_CONFIG: Record<
+  ConversationStatus,
+  { icon: typeof Clock; className: string; labelKey: string }
+> = {
+  pending: { icon: Clock, className: "text-amber-400 bg-amber-400/10", labelKey: "statusPending" },
+  in_progress: { icon: MessageCircle, className: "text-primary bg-primary/10", labelKey: "statusInProgress" },
+  waiting_customer: { icon: Hourglass, className: "text-blue-400 bg-blue-400/10", labelKey: "statusWaitingCustomer" },
+  closed: { icon: CheckCircle2, className: "text-muted-foreground bg-muted", labelKey: "statusClosed" },
+  finalized: { icon: CheckCheck, className: "text-emerald-500 bg-emerald-500/10", labelKey: "statusFinalized" },
 };
 
-/**
- * Keys into the SAME `t()` labels the filter dropdown already uses
- * (filterOpen/filterPending/filterClosed) — reused rather than
- * duplicated so the status dot's tooltip/aria-label and the filter
- * menu can never drift apart. This dot is a STATUS indicator
- * (open/pending/closed) — unrelated to, and never affected by, the
- * unread badge next to it. It stays visible regardless of
- * unread_count, including right after a conversation is opened and
- * its unread badge disappears.
- */
-const STATUS_LABEL_KEYS: Record<ConversationStatus, "filterOpen" | "filterPending" | "filterClosed"> = {
-  open: "filterOpen",
+/** As quatro abas primárias — 'closed' fica de fora de propósito, acessível só pelo botão secundário "Encerradas". */
+const PRIMARY_TABS = ["in_progress", "waiting_customer", "pending", "finalized"] as const;
+
+// 'in_progress' e 'pending' reaproveitam as chaves de status/filtro já
+// existentes (o texto da aba é idêntico ao do badge/filtro nesses dois
+// casos); só 'waiting_customer' e 'finalized' precisam de uma forma
+// mais curta/plural própria para caber na aba.
+const TAB_LABEL_KEYS: Record<(typeof PRIMARY_TABS)[number], string> = {
+  in_progress: "statusInProgress",
+  waiting_customer: "tabWaitingCustomer",
   pending: "filterPending",
-  closed: "filterClosed",
+  finalized: "tabFinalized",
 };
 
-
-
-type InboxFilter = ConversationStatus | "all" | "unread";
+type StatusFilter = ConversationStatus | "all";
 
 export function ConversationList({
   activeConversationId,
@@ -80,23 +105,22 @@ export function ConversationList({
   // the RLS insert.
   const canSend = useCan("send-messages");
 
-  const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = useMemo(() => [
-    { label: t("filterAll"), value: "all" },
-    { label: t("filterUnread"), value: "unread" },
-    { label: t("filterOpen"), value: "open" },
-    { label: t("filterPending"), value: "pending" },
-    { label: t("filterClosed"), value: "closed" },
-  ], [t]);
-
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<InboxFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [assigneeFilter, setAssigneeFilter] = useState<string | "unassigned" | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
   // Broadcast audience filtering. Company is an exact match on the field.
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
+  // Teammates for the "responsável" filter — same self-contained fetch
+  // pattern as message-thread.tsx's own profiles list (RLS already
+  // bounds this to the caller's account).
+  const [profiles, setProfiles] = useState<Profile[]>([]);
 
   // Keep the latest callback in a ref so the fetch effect below can
   // have a stable, empty-dep identity. Previously the fetch useCallback
@@ -120,6 +144,7 @@ export function ConversationList({
     let cancelled = false;
 
     (async () => {
+      setLoadError(false);
       const { data, error } = await supabase
         .from("conversations")
         .select(CONVERSATION_SELECT)
@@ -135,6 +160,7 @@ export function ConversationList({
           hint: error.hint,
           code: error.code,
         });
+        setLoadError(true);
         setLoading(false);
         return;
       }
@@ -165,6 +191,23 @@ export function ConversationList({
     };
   }, []);
 
+  useEffect(() => {
+    const supabase = createClient();
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase.from("profiles").select("*").order("full_name");
+      if (cancelled) return;
+      if (error) {
+        console.error("Failed to fetch profiles:", error);
+        return;
+      }
+      setProfiles((data as Profile[]) ?? []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Company options are derived from the loaded conversations — there's no
   // separate companies table, and only companies with a live conversation
   // are worth offering as an inbox filter.
@@ -183,14 +226,25 @@ export function ConversationList({
     return m;
   }, [tags]);
 
-  const filtered = useMemo(() => {
-    let result = conversations;
+  const profilesByUserId = useMemo(() => {
+    const m = new Map<string, Profile>();
+    for (const p of profiles) m.set(p.user_id, p);
+    return m;
+  }, [profiles]);
 
-    if (filter === "unread") {
-      result = result.filter((c) => c.unread_count > 0);
-    } else if (filter !== "all") {
-      result = result.filter((c) => c.status === filter);
-    }
+  // Contagem por status entre TODAS as conversas carregadas (não
+  // reduzida por busca/etiquetas/empresa/responsável/não-lidas) — as
+  // abas mostram "quantas existem", não "quantas sobram depois dos
+  // outros filtros". Ver countConversationsByStatus.
+  const statusCounts = useMemo(() => countConversationsByStatus(conversations), [conversations]);
+
+  const inboxFilters: InboxFilters = useMemo(
+    () => ({ status: statusFilter, unreadOnly, assigneeId: assigneeFilter }),
+    [statusFilter, unreadOnly, assigneeFilter],
+  );
+
+  const filtered = useMemo(() => {
+    let result = conversations.filter((c) => matchesInboxFilters(c, inboxFilters));
 
     // Contact-based filters (tags via OR logic, exact company match).
     if (selectedTagIds.length > 0 || selectedCompany !== null) {
@@ -213,7 +267,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, filter, search, selectedTagIds, selectedCompany]);
+  }, [conversations, inboxFilters, search, selectedTagIds, selectedCompany]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -221,12 +275,20 @@ export function ConversationList({
     );
   }, []);
 
-  const clearContactFilters = useCallback(() => {
+  const hasExtraFilters =
+    selectedTagIds.length > 0 ||
+    selectedCompany !== null ||
+    unreadOnly ||
+    assigneeFilter !== null ||
+    statusFilter === "closed";
+
+  const clearAllFilters = useCallback(() => {
     setSelectedTagIds([]);
     setSelectedCompany(null);
+    setUnreadOnly(false);
+    setAssigneeFilter(null);
+    setStatusFilter("all");
   }, []);
-
-  const hasContactFilters = selectedTagIds.length > 0 || selectedCompany !== null;
 
   const handleSearchChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -242,7 +304,12 @@ export function ConversationList({
     [onSelect]
   );
 
-  const activeFilter = FILTER_OPTIONS.find((o) => o.value === filter);
+  const assigneeChipLabel =
+    assigneeFilter === "unassigned"
+      ? t("unassigned")
+      : assigneeFilter
+        ? (profilesByUserId.get(assigneeFilter)?.full_name ?? t("assignee"))
+        : null;
 
   return (
     // w-full on mobile so the list occupies the whole viewport when it's
@@ -271,28 +338,113 @@ export function ConversationList({
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-1">
-          <DropdownMenu>
-            <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted">
-                {activeFilter?.label ?? t("filterAll")}
-                <ChevronDown className="h-3 w-3" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="border-border bg-popover"
+        {/* Abas de status (FASE 5C) — "Todas" + as quatro abas
+            primárias pedidas. 'closed' fica fora das abas de propósito;
+            é alcançável só pelo botão "Encerradas" logo abaixo. */}
+        <div className="flex items-center gap-1 overflow-x-auto" role="tablist" aria-label={t("statusTabsLabel")}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={statusFilter === "all"}
+            onClick={() => setStatusFilter("all")}
+            className={cn(
+              "shrink-0 rounded-md px-2 py-1 text-xs font-medium",
+              statusFilter === "all"
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            {t("filterAll")}
+          </button>
+          {PRIMARY_TABS.map((status) => (
+            <button
+              key={status}
+              type="button"
+              role="tab"
+              aria-selected={statusFilter === status}
+              onClick={() => setStatusFilter(status)}
+              className={cn(
+                "flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium",
+                statusFilter === status
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
             >
-              {FILTER_OPTIONS.map((opt) => (
+              {t(TAB_LABEL_KEYS[status])}
+              {statusCounts[status] > 0 && (
+                <span className="rounded-full bg-muted px-1 text-[10px] tabular-nums">
+                  {statusCounts[status]}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1">
+          {/* Status "Encerradas" — secundário de propósito (fora das
+              abas), conforme pedido. */}
+          <button
+            type="button"
+            onClick={() => setStatusFilter(statusFilter === "closed" ? "all" : "closed")}
+            className={cn(
+              "inline-flex items-center gap-1 h-7 px-2 text-xs rounded-md hover:bg-muted",
+              statusFilter === "closed" ? "text-primary" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <CheckCircle2 className="h-3 w-3" />
+            {t("filterClosed")}
+            {statusCounts.closed > 0 && (
+              <span className="rounded-full bg-muted px-1 text-[10px] tabular-nums">
+                {statusCounts.closed}
+              </span>
+            )}
+          </button>
+
+          <DropdownMenuCheckboxItemButton
+            checked={unreadOnly}
+            onCheckedChange={setUnreadOnly}
+            label={t("filterUnread")}
+          />
+
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              className={cn(
+                "inline-flex items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted",
+                assigneeFilter ? "text-primary" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Users className="h-3 w-3" />
+              {t("assignee")}
+              <ChevronDown className="h-3 w-3" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-64 w-56 border-border bg-popover">
+              <DropdownMenuItem
+                onClick={() => setAssigneeFilter(null)}
+                className={cn("text-sm", assigneeFilter === null ? "text-primary" : "text-popover-foreground")}
+              >
+                {t("allAssignees")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setAssigneeFilter("unassigned")}
+                className={cn(
+                  "flex items-center gap-2 text-sm",
+                  assigneeFilter === "unassigned" ? "text-primary" : "text-popover-foreground",
+                )}
+              >
+                <UserX className="h-3.5 w-3.5" />
+                {t("unassigned")}
+              </DropdownMenuItem>
+              {profiles.length > 0 && <DropdownMenuSeparator />}
+              {profiles.map((p) => (
                 <DropdownMenuItem
-                  key={opt.value}
-                  onClick={() => setFilter(opt.value)}
+                  key={p.user_id}
+                  onClick={() => setAssigneeFilter(p.user_id)}
                   className={cn(
                     "text-sm",
-                    filter === opt.value
-                      ? "text-primary"
-                      : "text-popover-foreground"
+                    assigneeFilter === p.user_id ? "text-primary" : "text-popover-foreground",
                   )}
                 >
-                  {opt.label}
+                  <span className="truncate">{p.full_name}</span>
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -387,7 +539,7 @@ export function ConversationList({
           )}
         </div>
 
-        {hasContactFilters && (
+        {hasExtraFilters && (
           <div className="flex flex-wrap items-center gap-1">
             {selectedTagIds.map((id) => {
               const tag = tagsById.get(id);
@@ -415,8 +567,35 @@ export function ConversationList({
                 <X className="h-3 w-3" />
               </button>
             )}
+            {unreadOnly && (
+              <button
+                onClick={() => setUnreadOnly(false)}
+                className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-foreground hover:bg-muted/70"
+              >
+                <span className="max-w-24 truncate">{t("filterUnread")}</span>
+                <X className="h-3 w-3" />
+              </button>
+            )}
+            {assigneeChipLabel && (
+              <button
+                onClick={() => setAssigneeFilter(null)}
+                className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-foreground hover:bg-muted/70"
+              >
+                <span className="max-w-24 truncate">{assigneeChipLabel}</span>
+                <X className="h-3 w-3" />
+              </button>
+            )}
+            {statusFilter === "closed" && (
+              <button
+                onClick={() => setStatusFilter("all")}
+                className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-foreground hover:bg-muted/70"
+              >
+                <span className="max-w-24 truncate">{t("filterClosed")}</span>
+                <X className="h-3 w-3" />
+              </button>
+            )}
             <button
-              onClick={clearContactFilters}
+              onClick={clearAllFilters}
               className="px-1 text-[11px] text-muted-foreground hover:text-foreground"
             >
               {t("clearAll")}
@@ -436,9 +615,24 @@ export function ConversationList({
           <div className="flex items-center justify-center py-12">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           </div>
-        ) : filtered.length === 0 ? (
+        ) : loadError ? (
+          <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
+            <AlertCircle className="h-6 w-6 text-destructive" />
+            <p className="text-sm text-muted-foreground">{t("loadError")}</p>
+          </div>
+        ) : conversations.length === 0 ? (
           <div className="px-4 py-12 text-center">
             <p className="text-sm text-muted-foreground">{t("noConversations")}</p>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="px-4 py-12 text-center">
+            <p className="text-sm text-muted-foreground">{t("noMatchingConversations")}</p>
+            <button
+              onClick={clearAllFilters}
+              className="mt-2 text-xs text-primary hover:underline"
+            >
+              {t("clearAll")}
+            </button>
           </div>
         ) : (
           <div className="flex flex-col">
@@ -455,6 +649,32 @@ export function ConversationList({
         )}
       </ScrollArea>
     </div>
+  );
+}
+
+/** Simple checkbox-shaped toggle button — used for "Não lidas", which doesn't need a dropdown of its own. */
+function DropdownMenuCheckboxItemButton({
+  checked,
+  onCheckedChange,
+  label,
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+      className={cn(
+        "inline-flex items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted",
+        checked ? "text-primary" : "text-muted-foreground hover:text-foreground"
+      )}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -485,6 +705,10 @@ function ConversationItem({
       })
     : "";
 
+  const statusConfig = STATUS_BADGE_CONFIG[conversation.status];
+  const StatusIcon = statusConfig.icon;
+  const statusLabel = t(statusConfig.labelKey);
+
   return (
     <button
       onClick={handleClick}
@@ -512,13 +736,10 @@ function ConversationItem({
           <span className="truncate text-sm font-medium text-foreground">
             {displayName}
           </span>
-          <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
-        </div>
-        <div className="mt-0.5 flex items-center justify-between gap-2">
-          <p className="truncate text-xs text-muted-foreground">
-            {conversation.last_message_text || t("noMessagesYet")}
-          </p>
           <div className="flex shrink-0 items-center gap-1.5">
+            {/* Badge de não lida — SEMPRE separado do badge de status
+                abaixo: numérico, só aparece com unread_count > 0, e
+                nunca influencia (nem é influenciado por) o status. */}
             {conversation.unread_count > 0 && (
               <span
                 className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground"
@@ -528,16 +749,32 @@ function ConversationItem({
                 {conversation.unread_count}
               </span>
             )}
-            <span
-              className={cn(
-                "h-2 w-2 rounded-full",
-                STATUS_COLORS[conversation.status]
-              )}
-              role="img"
-              aria-label={t(STATUS_LABEL_KEYS[conversation.status])}
-              title={t(STATUS_LABEL_KEYS[conversation.status])}
-            />
+            <span className="text-[10px] text-muted-foreground">{timeAgo}</span>
           </div>
+        </div>
+        <div className="mt-0.5 flex items-center justify-between gap-2">
+          <p className="truncate text-xs text-muted-foreground">
+            {conversation.last_message_text || t("noMessagesYet")}
+          </p>
+        </div>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          {/* Badge textual de status — ícone + cor + texto (nunca só
+              cor), sempre visível independente de unread_count. Largura
+              máxima com truncamento evita que "Aguardando cliente"
+              quebre o layout compacto da lista; título/aria-label
+              carregam o texto completo. */}
+          <span
+            className={cn(
+              "flex max-w-[7.5rem] shrink items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+              statusConfig.className,
+            )}
+            role="img"
+            aria-label={statusLabel}
+            title={statusLabel}
+          >
+            <StatusIcon className="h-2.5 w-2.5 shrink-0" />
+            <span className="truncate">{statusLabel}</span>
+          </span>
         </div>
       </div>
     </button>
