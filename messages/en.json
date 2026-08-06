@@ -223,7 +223,9 @@
       "downloadDocument": "Download",
       "loadingDocument": "Loading…",
       "documentAccessDenied": "You don't have access to this document.",
-      "documentLoadError": "Couldn't load the document. Try again."
+      "documentLoadError": "Couldn't load the document. Try again.",
+      "imageAccessDenied": "You don't have access to this image.",
+      "imageLoadError": "Couldn't load the image. Try again."
     },
     "actions": {
       "reply": "Reply",

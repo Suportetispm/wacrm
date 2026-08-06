@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // No real database, no real HMAC computation, no real decrypt, and no
-// real document download/upload/RPC anywhere in this file — every DB
-// call, the webhook-auth check, and both parser/persist pairs (text
-// and document) are mocked.
+// real download/upload/RPC anywhere in this file — every DB call, the
+// webhook-auth check, and all three parser/persist pairs (text,
+// document, image) are mocked.
 
 const mocks = vi.hoisted(() => ({
   verifyUazapiWebhookToken: vi.fn(),
@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   persistInboundTextMessage: vi.fn(),
   parseInboundDocumentMessage: vi.fn(),
   persistInboundDocumentMessage: vi.fn(),
+  parseInboundImageMessage: vi.fn(),
+  persistInboundImageMessage: vi.fn(),
   decrypt: vi.fn(),
 }))
 
@@ -32,6 +34,14 @@ vi.mock('@/lib/whatsapp/uazapi-webhook-document-parser', () => ({
 
 vi.mock('@/lib/whatsapp/uazapi-webhook-document-persist', () => ({
   persistInboundDocumentMessage: mocks.persistInboundDocumentMessage,
+}))
+
+vi.mock('@/lib/whatsapp/uazapi-webhook-image-parser', () => ({
+  parseInboundImageMessage: mocks.parseInboundImageMessage,
+}))
+
+vi.mock('@/lib/whatsapp/uazapi-webhook-image-persist', () => ({
+  persistInboundImageMessage: mocks.persistInboundImageMessage,
 }))
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
@@ -98,15 +108,35 @@ const PARSED_DOCUMENT_FIXTURE = {
   fileSize: 1024,
 }
 
+// Same rationale as PARSED_DOCUMENT_FIXTURE — image parser field-level
+// filtering (fromMe/wasSentByApi/group/viewOnce/mimetype/etc.) is
+// unit-tested independently in uazapi-webhook-image-parser.test.ts.
+const PARSED_IMAGE_FIXTURE = {
+  providerMessageId: 'img-msg-1',
+  providerDownloadId: 'img-dl-1',
+  chatId: '551199999999@s.whatsapp.net',
+  sender: '551199999999@s.whatsapp.net',
+  senderName: 'Fixture',
+  occurredAt: '2026-01-01T00:00:00.000Z',
+  mimeType: 'image/jpeg',
+  fileSize: 1024,
+  width: 800,
+  height: 600,
+  fileName: 'image.jpg',
+}
+
 beforeEach(() => {
   mocks.verifyUazapiWebhookToken.mockReset()
   mocks.parseInboundTextMessage.mockReset()
   mocks.persistInboundTextMessage.mockReset()
   mocks.parseInboundDocumentMessage.mockReset()
   mocks.persistInboundDocumentMessage.mockReset()
+  mocks.parseInboundImageMessage.mockReset()
+  mocks.persistInboundImageMessage.mockReset()
   mocks.decrypt.mockReset()
   mocks.verifyUazapiWebhookToken.mockReturnValue(true)
   mocks.parseInboundDocumentMessage.mockReturnValue(null)
+  mocks.parseInboundImageMessage.mockReturnValue(null)
   mocks.decrypt.mockReturnValue('fixture-decrypted-token')
   tokenLookupResult = { data: { uazapi_instance_token: 'fixture-ciphertext' }, error: null }
 })
@@ -128,12 +158,13 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — text path (unchanged)
     expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
   })
 
-  it('covers images/audio/video and other non-PDF media: still ignored when the document parser also rejects it', async () => {
+  it('covers audio/video/stickers and other unsupported media: still ignored when text, document, AND image parsers all reject it', async () => {
     mocks.parseInboundTextMessage.mockReturnValue(null)
     mocks.parseInboundDocumentMessage.mockReturnValue(null)
+    mocks.parseInboundImageMessage.mockReturnValue(null)
 
     const res = await POST(
-      request({ EventType: 'messages', message: { messageType: 'ImageMessage', type: 'media' } }),
+      request({ EventType: 'messages', message: { messageType: 'AudioMessage', type: 'media' } }),
       params,
     )
     const json = await res.json()
@@ -141,6 +172,7 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — text path (unchanged)
     expect(res.status).toBe(200)
     expect(json).toEqual({ status: 'ignored' })
     expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
   })
 
   it('returns 200 {status: "persisted"} when persistence reports a new message, and never touches the document path', async () => {
@@ -207,6 +239,8 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — text path (unchanged)
     expect(mocks.persistInboundTextMessage).not.toHaveBeenCalled()
     expect(mocks.parseInboundDocumentMessage).not.toHaveBeenCalled()
     expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
+    expect(mocks.parseInboundImageMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
   })
 })
 
@@ -341,5 +375,162 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — document (PDF) path',
     logSpy.mockRestore()
     errorSpy.mockRestore()
     warnSpy.mockRestore()
+  })
+})
+
+// FASE 4B/4C — image (JPEG/PNG/WebP) path. TEMP_IMAGE_SHAPE_DISCOVERY
+// (FASE 4A) has been fully removed now that the real parser/persist
+// pair is wired in and tested — see docs/uazapi-webhook-progress.md.
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — image path', () => {
+  function imageRequest(message: Record<string, unknown> = { messageType: 'ImageMessage', type: 'media' }) {
+    return request({ EventType: 'messages', message })
+  }
+
+  beforeEach(() => {
+    // Every test in this block starts from "not a text message, not a
+    // document" so the route falls through to the image parser, exactly
+    // as it would for a real inbound image.
+    mocks.parseInboundTextMessage.mockReturnValue(null)
+    mocks.parseInboundDocumentMessage.mockReturnValue(null)
+  })
+
+  it('calls parseInboundImageMessage only after the text and document parsers reject the event', async () => {
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'persisted' })
+
+    await POST(imageRequest(), params)
+
+    expect(mocks.parseInboundTextMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.parseInboundDocumentMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.parseInboundImageMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('calls persistInboundImageMessage with a decrypted instance token and returns 200 {status:"persisted", type:"image"}', async () => {
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'persisted' })
+
+    const res = await POST(imageRequest(), params)
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toEqual({ status: 'persisted', type: 'image' })
+    expect(mocks.persistInboundImageMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.persistInboundImageMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: CONFIG_ROW.account_id,
+        configOwnerUserId: CONFIG_ROW.user_id,
+        instanceToken: 'fixture-decrypted-token',
+        parsed: PARSED_IMAGE_FIXTURE,
+      }),
+    )
+    expect(mocks.persistInboundTextMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 {status:"duplicate", type:"image"} when image persistence reports a redelivery no-op', async () => {
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'duplicate' })
+
+    const res = await POST(imageRequest(), params)
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toEqual({ status: 'duplicate', type: 'image' })
+  })
+
+  it('returns 200 {status:"ignored"} for a view-once image — the parser rejects it, so persistence is never called', async () => {
+    // The privacy decision (never persist viewOnce media) lives in
+    // parseInboundImageMessage itself (unit-tested in
+    // uazapi-webhook-image-parser.test.ts: "rejects content.viewOnce
+    // === true unconditionally"). At the route level, a view-once
+    // image is indistinguishable from any other out-of-scope event —
+    // the mocked parser simply returns null, exactly as a real one
+    // would for this payload.
+    mocks.parseInboundImageMessage.mockReturnValue(null)
+
+    const res = await POST(
+      imageRequest({ messageType: 'ImageMessage', type: 'media', content: { viewOnce: true } }),
+      params,
+    )
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toEqual({ status: 'ignored' })
+    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 {status:"ignored"} for an unsupported image MIME type', async () => {
+    mocks.parseInboundImageMessage.mockReturnValue(null)
+
+    const res = await POST(
+      imageRequest({ messageType: 'ImageMessage', type: 'media', content: { mimetype: 'image/gif' } }),
+      params,
+    )
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toEqual({ status: 'ignored' })
+    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
+  })
+
+  it('returns 503 {error:"persistence_failed"} on a real image persistence failure, never 200', async () => {
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'error', code: 'upload_failed' })
+
+    const res = await POST(imageRequest(), params)
+    const json = await res.json()
+
+    expect(res.status).toBe(503)
+    expect(json).toEqual({ error: 'persistence_failed' })
+  })
+
+  it('returns 503 {error:"persistence_failed"} when the instance token row is missing, without calling persistInboundImageMessage', async () => {
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    tokenLookupResult = { data: null, error: null }
+
+    const res = await POST(imageRequest(), params)
+    const json = await res.json()
+
+    expect(res.status).toBe(503)
+    expect(json).toEqual({ error: 'persistence_failed' })
+    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
+  })
+
+  it('never logs the decrypted token, sender, provider ids, or any secret-shaped value', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const secretShapedFixture = {
+      ...PARSED_IMAGE_FIXTURE,
+      providerMessageId: 'IMG-MESSAGE-ID-MARKER',
+      providerDownloadId: 'IMG-DOWNLOAD-ID-MARKER',
+      sender: '5511988887777@s.whatsapp.net',
+    }
+    mocks.parseInboundImageMessage.mockReturnValue(secretShapedFixture)
+    mocks.decrypt.mockReturnValue('DECRYPTED-TOKEN-MARKER')
+
+    mocks.persistInboundImageMessage.mockResolvedValueOnce({ outcome: 'persisted' })
+    await POST(imageRequest(), params)
+    mocks.persistInboundImageMessage.mockResolvedValueOnce({ outcome: 'duplicate' })
+    await POST(imageRequest(), params)
+    mocks.persistInboundImageMessage.mockResolvedValueOnce({ outcome: 'error', code: 'upload_failed' })
+    await POST(imageRequest(), params)
+
+    const allLoggedArgs = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+    const serialized = JSON.stringify(allLoggedArgs)
+
+    for (const forbidden of [
+      'DECRYPTED-TOKEN-MARKER',
+      'fixture-ciphertext',
+      'IMG-MESSAGE-ID-MARKER',
+      'IMG-DOWNLOAD-ID-MARKER',
+      '5511988887777',
+      VALID_HMAC,
+    ]) {
+      expect(serialized).not.toContain(forbidden)
+    }
+
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 })

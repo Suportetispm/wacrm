@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { cn, formatFileSize, sanitizeFileName } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
@@ -240,6 +240,164 @@ function DocumentAttachment({
   );
 }
 
+/**
+ * Inbound JPEG/PNG/WebP whose bytes live in the private
+ * `whatsapp-attachments` bucket (migration 043) — same private-path
+ * model as `DocumentAttachment`, but images auto-load a thumbnail on
+ * mount instead of waiting for a click (matching how outbound/legacy
+ * `media_url` images already render inline via `MediaImage` above).
+ * Opening in a new tab or downloading always fetches a FRESH signed
+ * URL rather than reusing the one used for the thumbnail — the 60s TTL
+ * may have already elapsed by the time the user clicks.
+ */
+function InlineImageAttachment({
+  messageId,
+  alt,
+  t,
+}: {
+  messageId: string;
+  alt: string;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [broken, setBroken] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const retriedRef = useRef(false);
+
+  const fetchSignedUrl = useCallback(async (): Promise<string | null> => {
+    const res = await fetch(`/api/messages/${messageId}/attachment`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data?.url === "string" ? data.url : null;
+  }, [messageId]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setBroken(false);
+    fetchSignedUrl()
+      .then((url) => {
+        if (!alive) return;
+        if (url) setSrc(url);
+        else setBroken(true);
+      })
+      .catch(() => {
+        if (alive) setBroken(true);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fetchSignedUrl]);
+
+  const handleImgError = useCallback(() => {
+    if (retriedRef.current) {
+      setBroken(true);
+      return;
+    }
+    // The signed URL may have expired between fetch and render (slow
+    // network, backgrounded tab) — one silent retry with a fresh URL
+    // before giving up.
+    retriedRef.current = true;
+    fetchSignedUrl().then((url) => {
+      if (url) setSrc(url);
+      else setBroken(true);
+    });
+  }, [fetchSignedUrl]);
+
+  const handleOpen = useCallback(async () => {
+    setOpening(true);
+    try {
+      const url = await fetchSignedUrl();
+      if (url) {
+        window.open(url, "_blank", "noopener,noreferrer");
+      } else {
+        toast.error(t("imageLoadError"));
+      }
+    } finally {
+      setOpening(false);
+    }
+  }, [fetchSignedUrl, t]);
+
+  const handleDownload = useCallback(async () => {
+    setOpening(true);
+    try {
+      const url = await fetchSignedUrl();
+      if (!url) {
+        toast.error(t("imageLoadError"));
+        return;
+      }
+      const fileRes = await fetch(url);
+      if (!fileRes.ok) throw new Error("download failed");
+      const blob = await fileRes.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = "image";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      toast.error(t("imageLoadError"));
+    } finally {
+      setOpening(false);
+    }
+  }, [fetchSignedUrl, t]);
+
+  if (broken) {
+    return (
+      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
+        <ImageOff className="h-8 w-8 text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (loading || !src) {
+    return (
+      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="group relative inline-block">
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={opening}
+        className="block disabled:opacity-70"
+        aria-label={t("viewDocument")}
+      >
+        <img
+          src={src}
+          alt={alt}
+          className="max-h-64 max-w-60 rounded-lg object-cover"
+          onError={handleImgError}
+        />
+      </button>
+      <button
+        type="button"
+        onClick={handleDownload}
+        disabled={opening}
+        aria-label={t("downloadDocument")}
+        title={t("downloadDocument")}
+        className="absolute bottom-1 right-1 rounded-full bg-black/50 p-1 text-white opacity-0 transition-opacity group-hover:opacity-100 disabled:opacity-50"
+      >
+        {opening ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Download className="h-4 w-4" />
+        )}
+      </button>
+    </div>
+  );
+}
+
 function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof useTranslations> }) {
   switch (message.content_type) {
     case "text":
@@ -250,9 +408,18 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
       );
 
     case "image":
+      // Inbound images (migration 043) live behind a private storage
+      // path — auto-loaded via a signed URL. Legacy/outbound images
+      // keep using the public `media_url` link below, unchanged.
       return (
         <div>
-          {message.media_url ? (
+          {message.media_storage_path ? (
+            <InlineImageAttachment
+              messageId={message.id}
+              alt={message.content_text || t("photo")}
+              t={t}
+            />
+          ) : message.media_url ? (
             <MediaImage url={message.media_url} alt="Shared image" />
           ) : (
             <MediaUnavailable label={t("photo")} t={t} />

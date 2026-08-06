@@ -74,6 +74,16 @@ const documentMessage = {
   media_file_size: 123456,
 };
 
+const imageMessage = {
+  id: VALID_UUID,
+  conversation_id: 'conversation-1',
+  content_type: 'image',
+  media_storage_path: 'account-1/conversation-1/hash.jpg',
+  media_file_name: 'image.jpg',
+  media_mime_type: 'image/jpeg',
+  media_file_size: 54321,
+};
+
 describe('GET /api/messages/[messageId]/attachment', () => {
   it('returns 401 when there is no session', async () => {
     mocks.requireRole.mockRejectedValue({ status: 401, message: 'Unauthorized' });
@@ -129,9 +139,9 @@ describe('GET /api/messages/[messageId]/attachment', () => {
     expect(mocks.createSignedUrl).not.toHaveBeenCalled();
   });
 
-  it('returns 415 for a non-PDF attachment', async () => {
+  it('returns 415 when content_type and media_mime_type disagree (document row, image mime)', async () => {
     mocks.messagesMaybeSingle.mockResolvedValue({
-      data: { ...documentMessage, content_type: 'image', media_mime_type: 'image/png' },
+      data: { ...documentMessage, media_mime_type: 'image/png' },
       error: null,
     });
     mocks.conversationsMaybeSingle.mockResolvedValue({
@@ -143,6 +153,70 @@ describe('GET /api/messages/[messageId]/attachment', () => {
 
     expect(res.status).toBe(415);
     expect(mocks.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns 415 for an unsupported image MIME type (e.g. image/gif)', async () => {
+    mocks.messagesMaybeSingle.mockResolvedValue({
+      data: { ...imageMessage, media_mime_type: 'image/gif' },
+      error: null,
+    });
+    mocks.conversationsMaybeSingle.mockResolvedValue({
+      data: { account_id: 'account-1' },
+      error: null,
+    });
+
+    const res = await GET(new Request('http://localhost'), params(VALID_UUID));
+
+    expect(res.status).toBe(415);
+    expect(mocks.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns 415 for an unsupported content_type altogether (e.g. audio)', async () => {
+    mocks.messagesMaybeSingle.mockResolvedValue({
+      data: { ...documentMessage, content_type: 'audio', media_mime_type: 'audio/ogg' },
+      error: null,
+    });
+    mocks.conversationsMaybeSingle.mockResolvedValue({
+      data: { account_id: 'account-1' },
+      error: null,
+    });
+
+    const res = await GET(new Request('http://localhost'), params(VALID_UUID));
+
+    expect(res.status).toBe(415);
+    expect(mocks.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('signs a 60-second URL for an authorized JPEG/PNG/WebP image, same as for a PDF', async () => {
+    for (const mime of ['image/jpeg', 'image/png', 'image/webp']) {
+      mocks.createSignedUrl.mockReset();
+      mocks.messagesMaybeSingle.mockResolvedValue({
+        data: { ...imageMessage, media_mime_type: mime },
+        error: null,
+      });
+      mocks.conversationsMaybeSingle.mockResolvedValue({
+        data: { account_id: 'account-1' },
+        error: null,
+      });
+      mocks.createSignedUrl.mockResolvedValue({
+        data: { signedUrl: 'https://storage.example/signed-image' },
+        error: null,
+      });
+
+      const res = await GET(new Request('http://localhost'), params(VALID_UUID));
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(mocks.createSignedUrl).toHaveBeenCalledWith(imageMessage.media_storage_path, 60);
+      expect(body).toEqual({
+        url: 'https://storage.example/signed-image',
+        fileName: 'image.jpg',
+        mimeType: mime,
+        fileSize: 54321,
+      });
+      const raw = JSON.stringify(body);
+      expect(raw).not.toContain('media_storage_path');
+    }
   });
 
   it('signs a 60-second URL and never returns the storage path or service_role', async () => {

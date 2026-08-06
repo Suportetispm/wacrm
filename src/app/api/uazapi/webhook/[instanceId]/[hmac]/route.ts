@@ -4,21 +4,27 @@ import { decrypt } from '@/lib/whatsapp/encryption'
 import { verifyUazapiWebhookToken } from '@/lib/whatsapp/uazapi-webhook-auth'
 import { parseInboundDocumentMessage } from '@/lib/whatsapp/uazapi-webhook-document-parser'
 import { persistInboundDocumentMessage } from '@/lib/whatsapp/uazapi-webhook-document-persist'
+import { parseInboundImageMessage } from '@/lib/whatsapp/uazapi-webhook-image-parser'
+import { persistInboundImageMessage } from '@/lib/whatsapp/uazapi-webhook-image-persist'
 import { parseInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-parser'
 import { persistInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-persist'
 
 // ============================================================
-// UAZAPI inbound webhook — persists inbound text messages and PDF
-// documents on individual (non-group) chats. See
-// docs/uazapi-webhook-progress.md for the full history and current
-// scope.
+// UAZAPI inbound webhook — persists inbound text messages, PDF
+// documents, and images (JPEG/PNG/WebP) on individual (non-group)
+// chats. See docs/uazapi-webhook-progress.md for the full history and
+// current scope.
 //
-// Scope for this stage: text (any content) and PDF documents only.
-// Groups, fromMe, API-echoed sends, non-PDF documents, and other
-// media types (image/audio/video) are all out of scope —
-// parseInboundTextMessage and parseInboundDocumentMessage both return
-// null for all of it, and the route acks 200 {status:'ignored'}
-// without persisting anything.
+// Scope for this stage: text (any content), PDF documents, and
+// JPEG/PNG/WebP images. WhatsApp "view once" images are recognized but
+// deliberately never persisted (privacy — see
+// uazapi-webhook-image-parser.ts). Groups, fromMe, API-echoed sends,
+// and other media types (audio/video/stickers, non-PDF documents,
+// non-JPEG/PNG/WebP images) are all out of scope —
+// parseInboundTextMessage, parseInboundDocumentMessage, and
+// parseInboundImageMessage all return null for anything outside their
+// own scope, and the route acks 200 {status:'ignored'} without
+// persisting anything.
 // ============================================================
 
 // 256 KB is generous for a single WhatsApp message event's metadata
@@ -134,67 +140,108 @@ export async function POST(
   }
 
   // Not a text message in scope — try the PDF document path next.
-  // Everything still out of scope here (images/audio/video, non-PDF
-  // documents, groups, fromMe, API echoes) makes
-  // parseInboundDocumentMessage return null too, leaving this an
-  // intentional no-op exactly like the text-only branch above.
   const parsedDocument = parseInboundDocumentMessage(parsed)
-  if (!parsedDocument) {
-    console.log('[uazapi/webhook:persist] ignored', {
-      instanceId: maskInstanceId(instanceId),
-    })
-    return NextResponse.json({ status: 'ignored' }, { status: 200 })
-  }
-
-  let instanceToken: string
-  try {
-    const { data: tokenRow, error: tokenError } = await supabaseAdmin()
-      .from('whatsapp_config')
-      .select('uazapi_instance_token')
-      .eq('id', config.id)
-      .maybeSingle()
-
-    if (tokenError || !tokenRow?.uazapi_instance_token) {
-      throw new Error('token_unavailable')
+  if (parsedDocument) {
+    let instanceToken: string
+    try {
+      instanceToken = await resolveInstanceToken(config.id)
+    } catch {
+      console.error('[uazapi/webhook:document-persist] persistence_failed', {
+        instanceId: maskInstanceId(instanceId),
+        code: 'token_unavailable',
+      })
+      return NextResponse.json({ error: 'persistence_failed' }, { status: 503 })
     }
-    instanceToken = decrypt(tokenRow.uazapi_instance_token)
-  } catch {
-    // No token detail, no DB error, no payload — a small, fixed
-    // internal code only, same convention as the text/document
-    // persistence failure logs below.
-    console.error('[uazapi/webhook:document-persist] persistence_failed', {
-      instanceId: maskInstanceId(instanceId),
-      code: 'token_unavailable',
+
+    const documentResult = await persistInboundDocumentMessage({
+      db: supabaseAdmin(),
+      accountId: config.account_id,
+      configOwnerUserId: config.user_id,
+      instanceToken,
+      parsed: parsedDocument,
     })
-    return NextResponse.json({ error: 'persistence_failed' }, { status: 503 })
+    instanceToken = ''
+
+    if (documentResult.outcome === 'error') {
+      // No file name/phone/contact name/message id/storage path/URL/
+      // base64/token/mediaKey/hashes — only a small, fixed internal code.
+      console.error('[uazapi/webhook:document-persist] persistence_failed', {
+        instanceId: maskInstanceId(instanceId),
+        code: documentResult.code,
+      })
+      // 5xx (not 200), same reasoning as the text path — a real failure
+      // must never be acked as success.
+      return NextResponse.json({ error: 'persistence_failed' }, { status: 503 })
+    }
+
+    console.log('[uazapi/webhook:document-persist]', documentResult.outcome, {
+      instanceId: maskInstanceId(instanceId),
+    })
+
+    return NextResponse.json({ status: documentResult.outcome, type: 'document' }, { status: 200 })
   }
 
-  const documentResult = await persistInboundDocumentMessage({
-    db: supabaseAdmin(),
-    accountId: config.account_id,
-    configOwnerUserId: config.user_id,
-    instanceToken,
-    parsed: parsedDocument,
-  })
-  instanceToken = ''
+  // Not a document either — try the image path. `viewOnce` media,
+  // groups, fromMe, API echoes, and unsupported MIME types all make
+  // parseInboundImageMessage return null, falling through to
+  // 'ignored' below exactly like the text/document branches.
+  const parsedImage = parseInboundImageMessage(parsed)
+  if (parsedImage) {
+    let instanceToken: string
+    try {
+      instanceToken = await resolveInstanceToken(config.id)
+    } catch {
+      console.error('[uazapi/webhook:image-persist] persistence_failed', {
+        instanceId: maskInstanceId(instanceId),
+        code: 'token_unavailable',
+      })
+      return NextResponse.json({ error: 'persistence_failed' }, { status: 503 })
+    }
 
-  if (documentResult.outcome === 'error') {
-    // No file name/phone/contact name/message id/storage path/URL/
-    // base64/token/mediaKey/hashes — only a small, fixed internal code.
-    console.error('[uazapi/webhook:document-persist] persistence_failed', {
-      instanceId: maskInstanceId(instanceId),
-      code: documentResult.code,
+    const imageResult = await persistInboundImageMessage({
+      db: supabaseAdmin(),
+      accountId: config.account_id,
+      configOwnerUserId: config.user_id,
+      instanceToken,
+      parsed: parsedImage,
     })
-    // 5xx (not 200), same reasoning as the text path — a real failure
-    // must never be acked as success.
-    return NextResponse.json({ error: 'persistence_failed' }, { status: 503 })
+    instanceToken = ''
+
+    if (imageResult.outcome === 'error') {
+      // No caption/phone/contact name/message id/storage path/URL/
+      // base64/token/mediaKey/hashes — only a small, fixed internal code.
+      console.error('[uazapi/webhook:image-persist] persistence_failed', {
+        instanceId: maskInstanceId(instanceId),
+        code: imageResult.code,
+      })
+      return NextResponse.json({ error: 'persistence_failed' }, { status: 503 })
+    }
+
+    console.log('[uazapi/webhook:image-persist]', imageResult.outcome, {
+      instanceId: maskInstanceId(instanceId),
+    })
+
+    return NextResponse.json({ status: imageResult.outcome, type: 'image' }, { status: 200 })
   }
 
-  console.log('[uazapi/webhook:document-persist]', documentResult.outcome, {
+  console.log('[uazapi/webhook:persist] ignored', {
     instanceId: maskInstanceId(instanceId),
   })
+  return NextResponse.json({ status: 'ignored' }, { status: 200 })
+}
 
-  return NextResponse.json({ status: documentResult.outcome, type: 'document' }, { status: 200 })
+/** Fetches and decrypts the instance's UAZAPI token — shared by the document and image persistence paths (both need to call `POST /message/download`). Throws on any failure; callers map that to a 503 without leaking DB/decrypt detail. */
+async function resolveInstanceToken(configId: string): Promise<string> {
+  const { data: tokenRow, error: tokenError } = await supabaseAdmin()
+    .from('whatsapp_config')
+    .select('uazapi_instance_token')
+    .eq('id', configId)
+    .maybeSingle()
+
+  if (tokenError || !tokenRow?.uazapi_instance_token) {
+    throw new Error('token_unavailable')
+  }
+  return decrypt(tokenRow.uazapi_instance_token)
 }
 
 async function readBodyWithLimit(

@@ -223,7 +223,9 @@
       "downloadDocument": "Baixar",
       "loadingDocument": "Carregando…",
       "documentAccessDenied": "Você não tem acesso a este documento.",
-      "documentLoadError": "Não foi possível carregar o documento. Tente novamente."
+      "documentLoadError": "Não foi possível carregar o documento. Tente novamente.",
+      "imageAccessDenied": "Você não tem acesso a esta imagem.",
+      "imageLoadError": "Não foi possível carregar a imagem. Tente novamente."
     },
     "actions": {
       "reply": "Responder",
