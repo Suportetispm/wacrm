@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
+import { usePlatformAdmin } from "@/hooks/use-platform-admin";
 import { useTotalUnread } from "@/hooks/use-total-unread";
 import { useUnreadNotifications } from "@/hooks/use-unread-notifications";
 import {
@@ -18,6 +19,7 @@ import {
   Radio,
   Settings,
   Shield,
+  ShieldCheck,
   Ticket,
   User,
   UserCog,
@@ -119,6 +121,10 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const t = useTranslations("Sidebar");
   const pathname = usePathname();
   const { profile, profileLoading, account, accountRole, signOut } = useAuth();
+  // Platform scope — entirely separate from account_role. A tenant
+  // owner/admin does NOT get this entry unless they're also
+  // explicitly in public.platform_admins (see use-platform-admin.ts).
+  const { isPlatformAdmin } = usePlatformAdmin();
   const totalUnread = useTotalUnread();
   const unreadNotifications = useUnreadNotifications();
   // Only surface the account-name strip when it actually carries
@@ -273,7 +279,15 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
           <div className="my-4 border-t border-border" />
 
           <ul className="flex flex-col gap-1">
-            {bottomNavItems.map((item) => {
+            {[
+              ...bottomNavItems,
+              // Additive, never replacing the tenant nav above — the
+              // Superadmin keeps using their own account normally and
+              // just gets this one extra entry into the global admin area.
+              ...(isPlatformAdmin
+                ? [{ href: "/admin", labelKey: "superadmin", icon: ShieldCheck }]
+                : []),
+            ].map((item) => {
               const isActive = pathname.startsWith(item.href);
               return (
                 <li key={item.href}>

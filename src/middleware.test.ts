@@ -110,6 +110,29 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
     expect(res.headers.get("location")).toBeNull();
     expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
   });
+
+  it("redirects an unauthenticated visitor away from /admin to /login", async () => {
+    mockUser = null;
+    refreshedCookies = [{ ...ROTATED, value: "cleared" }];
+
+    const res = await middleware(new NextRequest("https://app.test/admin"));
+
+    // Middleware only confirms *some* session exists — whether this
+    // particular user is a platform admin is checked separately by
+    // requirePlatformAdmin() in admin/layout.tsx, not here.
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/login");
+    expect(res.cookies.get(ROTATED.name)?.value).toBe("cleared");
+  });
+
+  it("passes through (no redirect) for any signed-in user on /admin — the fine-grained platform-admin check happens in the page layout", async () => {
+    mockUser = { id: "user-1" };
+    refreshedCookies = [ROTATED];
+
+    const res = await middleware(new NextRequest("https://app.test/admin/accounts"));
+
+    expect(res.headers.get("location")).toBeNull();
+  });
 });
 
 describe("middleware — password-recovery routes are public and loop-free", () => {
