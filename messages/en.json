@@ -14,6 +14,36 @@
     "noAccount": "Don't have an account?",
     "createAccount": "Create account"
   },
+  "ForgotPasswordPage": {
+    "title": "Reset password",
+    "description": "Enter your email and we'll send you a reset link",
+    "emailLabel": "Email",
+    "emailPlaceholder": "you@example.com",
+    "sendButton": "Send reset link",
+    "sending": "Sending...",
+    "backToSignIn": "Back to sign in",
+    "successTitle": "Check your email",
+    "successDesc": "If an account exists for {email}, we've sent instructions to reset your password. Please check your inbox.",
+    "invalidLinkError": "That reset link is invalid or has expired. Request a new one below."
+  },
+  "ResetPasswordPage": {
+    "title": "Set a new password",
+    "description": "Choose a new password for your account.",
+    "newPasswordLabel": "New password",
+    "confirmPasswordLabel": "Confirm new password",
+    "submitButton": "Update password",
+    "updating": "Updating...",
+    "passwordTooShort": "Password must be at least {min} characters.",
+    "passwordMismatch": "Passwords don't match.",
+    "updateFailed": "Couldn't update your password. Request a new reset link and try again.",
+    "checkingSession": "Checking your link…",
+    "sessionExpiredTitle": "This link has expired",
+    "sessionExpiredDesc": "Password reset links are only valid for a short time. Request a new one to continue.",
+    "requestNewLink": "Request a new link",
+    "successTitle": "Password updated",
+    "successDesc": "Your password has been changed. Redirecting you to sign in…",
+    "backToSignIn": "Back to sign in"
+  },
   "Sidebar": {
     "title": "CRM Template for WhatsApp",
     "dashboard": "Dashboard",

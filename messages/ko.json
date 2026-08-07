@@ -14,6 +14,36 @@
     "noAccount": "계정이 없으신가요?",
     "createAccount": "계정 만들기"
   },
+  "ForgotPasswordPage": {
+    "title": "비밀번호 재설정",
+    "description": "이메일을 입력하시면 재설정 링크를 보내드립니다",
+    "emailLabel": "이메일",
+    "emailPlaceholder": "you@example.com",
+    "sendButton": "재설정 링크 보내기",
+    "sending": "전송 중...",
+    "backToSignIn": "로그인으로 돌아가기",
+    "successTitle": "이메일을 확인하세요",
+    "successDesc": "{email}에 해당하는 계정이 있는 경우, 비밀번호 재설정 안내를 보내드렸습니다. 받은편지함을 확인해 주세요.",
+    "invalidLinkError": "재설정 링크가 유효하지 않거나 만료되었습니다. 아래에서 새 링크를 요청하세요."
+  },
+  "ResetPasswordPage": {
+    "title": "새 비밀번호 설정",
+    "description": "계정에 사용할 새 비밀번호를 선택하세요.",
+    "newPasswordLabel": "새 비밀번호",
+    "confirmPasswordLabel": "새 비밀번호 확인",
+    "submitButton": "비밀번호 업데이트",
+    "updating": "업데이트 중...",
+    "passwordTooShort": "비밀번호는 최소 {min}자 이상이어야 합니다.",
+    "passwordMismatch": "비밀번호가 일치하지 않습니다.",
+    "updateFailed": "비밀번호를 업데이트할 수 없습니다. 새 재설정 링크를 요청한 후 다시 시도하세요.",
+    "checkingSession": "링크를 확인하는 중…",
+    "sessionExpiredTitle": "링크가 만료되었습니다",
+    "sessionExpiredDesc": "비밀번호 재설정 링크는 짧은 시간 동안만 유효합니다. 계속하려면 새 링크를 요청하세요.",
+    "requestNewLink": "새 링크 요청",
+    "successTitle": "비밀번호가 업데이트되었습니다",
+    "successDesc": "비밀번호가 변경되었습니다. 로그인 페이지로 이동합니다…",
+    "backToSignIn": "로그인으로 돌아가기"
+  },
   "Sidebar": {
     "title": "WhatsApp용 CRM 템플릿",
     "dashboard": "대시보드",

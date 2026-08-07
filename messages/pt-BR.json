@@ -14,6 +14,36 @@
     "noAccount": "Não tem uma conta?",
     "createAccount": "Criar conta"
   },
+  "ForgotPasswordPage": {
+    "title": "Redefinir senha",
+    "description": "Informe seu e-mail e enviaremos um link de redefinição",
+    "emailLabel": "Email",
+    "emailPlaceholder": "voce@exemplo.com",
+    "sendButton": "Enviar link de redefinição",
+    "sending": "Enviando...",
+    "backToSignIn": "Voltar para o login",
+    "successTitle": "Verifique seu e-mail",
+    "successDesc": "Se existir uma conta associada a {email}, enviaremos instruções para redefinir a senha. Verifique sua caixa de entrada.",
+    "invalidLinkError": "Esse link de redefinição é inválido ou expirou. Solicite um novo abaixo."
+  },
+  "ResetPasswordPage": {
+    "title": "Defina uma nova senha",
+    "description": "Escolha uma nova senha para sua conta.",
+    "newPasswordLabel": "Nova senha",
+    "confirmPasswordLabel": "Confirmar nova senha",
+    "submitButton": "Atualizar senha",
+    "updating": "Atualizando...",
+    "passwordTooShort": "A senha deve ter pelo menos {min} caracteres.",
+    "passwordMismatch": "As senhas não coincidem.",
+    "updateFailed": "Não foi possível atualizar sua senha. Solicite um novo link de redefinição e tente novamente.",
+    "checkingSession": "Verificando seu link…",
+    "sessionExpiredTitle": "Este link expirou",
+    "sessionExpiredDesc": "Links de redefinição de senha são válidos por pouco tempo. Solicite um novo para continuar.",
+    "requestNewLink": "Solicitar novo link",
+    "successTitle": "Senha atualizada",
+    "successDesc": "Sua senha foi alterada. Redirecionando para o login…",
+    "backToSignIn": "Voltar para o login"
+  },
   "Sidebar": {
     "title": "Modelo de CRM para WhatsApp",
     "dashboard": "Painel",

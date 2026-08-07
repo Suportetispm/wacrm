@@ -111,3 +111,37 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
     expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
   });
 });
+
+describe("middleware — password-recovery routes are public and loop-free", () => {
+  // /auth/callback, /forgot-password, and /reset-password are none of
+  // them in `protectedPaths`, and none of them (besides
+  // /forgot-password) are in the "redirect away if already signed in"
+  // list — this pins that fact so a future edit to either list can't
+  // silently 404/loop the recovery flow.
+
+  it("/auth/callback passes through unauthenticated (public callback endpoint)", async () => {
+    mockUser = null;
+    const res = await middleware(
+      new NextRequest("https://app.test/auth/callback?code=abc&next=/reset-password"),
+    );
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("/reset-password passes through unauthenticated (page-level gate handles auth)", async () => {
+    mockUser = null;
+    const res = await middleware(new NextRequest("https://app.test/reset-password"));
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("/reset-password passes through for an authenticated (recovery) session — no bounce loop", async () => {
+    mockUser = { id: "user-1" };
+    const res = await middleware(new NextRequest("https://app.test/reset-password"));
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("/forgot-password passes through unauthenticated", async () => {
+    mockUser = null;
+    const res = await middleware(new NextRequest("https://app.test/forgot-password"));
+    expect(res.headers.get("location")).toBeNull();
+  });
+});
