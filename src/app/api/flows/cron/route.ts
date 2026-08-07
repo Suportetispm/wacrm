@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { resolveFallbackPolicy } from '@/lib/flows/fallback'
+import { getActiveAccountIds } from '@/lib/accounts/active'
 
 /**
  * Sweep abandoned active flow runs.
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
   const { data: runs, error } = await admin
     .from('flow_runs')
     .select(
-      'id, flow_id, user_id, contact_id, last_advanced_at, flows ( fallback_policy )',
+      'id, flow_id, account_id, user_id, contact_id, last_advanced_at, flows ( fallback_policy )',
     )
     .eq('status', 'active')
 
@@ -67,14 +68,24 @@ export async function GET(request: Request) {
   type Row = {
     id: string
     flow_id: string
+    account_id: string
     user_id: string
     contact_id: string | null
     last_advanced_at: string
     flows: { fallback_policy: unknown } | { fallback_policy: unknown }[] | null
   }
 
+  // Empresa desativada: pula a varredura para essas runs (nem marca
+  // timed_out) — checagem em lote, uma query para o batch inteiro.
+  const activeAccountIds = await getActiveAccountIds(
+    admin,
+    (runs as Row[]).map((r) => r.account_id),
+  )
+
   let swept = 0
   for (const r of runs as Row[]) {
+    if (!activeAccountIds.has(r.account_id)) continue
+
     const flowsField = Array.isArray(r.flows) ? r.flows[0] : r.flows
     const policy = resolveFallbackPolicy(flowsField?.fallback_policy ?? null)
     const lastAdvanced = new Date(r.last_advanced_at)

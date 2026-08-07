@@ -1,4 +1,5 @@
 import { supabaseAdmin } from './admin-client'
+import { isAccountActive } from '@/lib/accounts/active'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { retrieveKnowledge } from './knowledge'
@@ -46,6 +47,16 @@ export async function dispatchInboundToAiReply(
 
   try {
     const db = supabaseAdmin()
+
+    // Empresa desativada: já é indiretamente coberto pelo webhook
+    // (que não chega a chamar esta função para uma conta inativa —
+    // ver src/app/api/whatsapp/webhook/route.ts), mas checado de
+    // novo aqui em profundidade, já que esta função também roda via
+    // service_role e não passa por RLS.
+    if (!(await isAccountActive(db, accountId))) {
+      console.warn('[ai auto-reply] account is inactive — skipping')
+      return
+    }
 
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return

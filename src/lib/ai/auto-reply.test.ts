@@ -14,6 +14,10 @@ const h = vi.hoisted(() => ({
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
+    // accounts.is_active — defaults active so every pre-existing test
+    // below keeps its original behavior.
+    accountActive: true,
+    fromCalls: [] as string[],
   },
 }))
 
@@ -25,6 +29,17 @@ vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
+      h.state.fromCalls.push(table)
+      if (table === 'accounts') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: () =>
+                Promise.resolve({ data: { is_active: h.state.accountActive }, error: null }),
+            }),
+          }),
+        }
+      }
       if (table === 'automations') {
         // .select().eq().eq().in().limit() → active auto-responders
         const chain = {
@@ -91,11 +106,33 @@ beforeEach(() => {
   h.state.claim = true
   h.state.updatePayload = null
   h.state.rpcCalls = []
+  h.state.accountActive = true
+  h.state.fromCalls = []
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])
   h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
+})
+
+describe('dispatchInboundToAiReply — inactive account (accounts.is_active = false)', () => {
+  it('skips entirely — never loads AI config, never sends', async () => {
+    h.state.accountActive = false
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.state.fromCalls).toContain('accounts')
+    expect(h.loadAiConfig).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('an active account proceeds past the gate (no regression)', async () => {
+    h.state.accountActive = true
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.loadAiConfig).toHaveBeenCalled()
+  })
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {

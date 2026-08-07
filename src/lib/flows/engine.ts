@@ -33,6 +33,7 @@
  */
 
 import { supabaseAdmin } from "./admin-client";
+import { isAccountActive } from "@/lib/accounts/active";
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
@@ -837,6 +838,17 @@ export async function dispatchInboundToFlows(
 ): Promise<DispatchInboundResult> {
   const db = supabaseAdmin();
   try {
+    // Empresa desativada: nunca avança nem inicia run nenhum. Este
+    // caminho roda inteiramente via service_role (chamado do
+    // webhook), então nunca passa por is_account_member()/RLS — ver
+    // src/lib/accounts/active.ts. Mesmo shape de retorno do caminho
+    // "nada a fazer" abaixo, para o chamador não precisar de um caso
+    // especial.
+    if (!(await isAccountActive(db, input.accountId))) {
+      console.warn("[flows] account is inactive — skipping dispatch");
+      return { consumed: false, outcome: "no_match" };
+    }
+
     const activeRun = await loadActiveRunForContact(
       db,
       input.accountId,

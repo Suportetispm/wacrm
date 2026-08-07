@@ -9,6 +9,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { isAccountActive } from '@/lib/accounts/active'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -215,7 +216,11 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
-async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
+// Exported (in addition to the route handlers below) so the inactive-
+// account gate can be unit-tested directly — Next.js only treats
+// GET/POST/etc. and a handful of named config exports specially; an
+// extra export like this is simply ignored by the framework.
+export async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
   if (!body.entry) return
 
   for (const entry of body.entry) {
@@ -283,6 +288,20 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       const config = configRows[0]
+
+      // Empresa desativada (accounts.is_active = false — ver
+      // 047_platform_account_management.sql): o webhook ainda
+      // responde 200 a Meta (fora deste bloco, no POST handler, antes
+      // de processWebhook rodar) para não entrar num loop de retry —
+      // mas nenhuma mensagem é persistida nem processada
+      // operacionalmente daqui pra baixo (sem contato/conversa/
+      // mensagem criados, sem automação, sem flow, sem resposta de
+      // IA). Este caminho inteiro roda via service_role e nunca passa
+      // por is_account_member()/RLS — ver src/lib/accounts/active.ts.
+      if (!(await isAccountActive(supabaseAdmin(), config.account_id))) {
+        console.warn('[webhook] account is inactive — dropping inbound message')
+        continue
+      }
 
       const decryptedAccessToken = decrypt(config.access_token)
 

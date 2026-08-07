@@ -19,6 +19,7 @@ import type {
   AssignConversationStepConfig,
 } from '@/types'
 import { supabaseAdmin } from './admin-client'
+import { isAccountActive } from '@/lib/accounts/active'
 import { addContactTagIfAbsent } from '@/lib/contacts/tag-write'
 import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
@@ -67,6 +68,16 @@ export interface DispatchInput {
 export async function runAutomationsForTrigger(input: DispatchInput): Promise<void> {
   try {
     const db = supabaseAdmin()
+
+    // Empresa desativada (accounts.is_active = false, ver
+    // 047_platform_account_management.sql): não inicia nenhum
+    // trabalho novo. Este caminho roda inteiramente via service_role,
+    // então nunca passa por is_account_member()/RLS — precisa desta
+    // checagem própria (ver src/lib/accounts/active.ts).
+    if (!(await isAccountActive(db, input.accountId))) {
+      console.warn('[automations] account is inactive — skipping dispatch')
+      return
+    }
 
     // Tenant isolation. `contactId` can be caller-supplied (the manual
     // POST /api/automations/engine entrypoint reads it straight from the
@@ -139,6 +150,22 @@ export async function resumePendingExecution(pending: {
   context: AutomationContext
 }): Promise<void> {
   const db = supabaseAdmin()
+
+  // Defesa em profundidade: /api/automations/cron já filtra contas
+  // inativas ANTES de reivindicar a linha (status='running'), então
+  // isto normalmente é redundante em operação normal — mas cobre
+  // qualquer chamador futuro que invoque resumePendingExecution
+  // diretamente, e uma corrida onde a conta é desativada entre o
+  // filtro do cron e esta chamada. Devolve a linha para 'pending'
+  // (não 'failed'/'done') para que ela seja retomada normalmente
+  // quando a conta for reativada — nenhum trabalho pendente é
+  // perdido.
+  if (!(await isAccountActive(db, pending.account_id))) {
+    console.warn('[automations] account is inactive — reverting pending execution to pending')
+    await markPending(pending.id, 'pending')
+    return
+  }
+
   const { data: automation, error } = await db
     .from('automations')
     .select('*')
@@ -785,7 +812,7 @@ async function finalizeLog(
     .eq('id', logId)
 }
 
-async function markPending(id: string, status: 'done' | 'failed') {
+async function markPending(id: string, status: 'done' | 'failed' | 'pending') {
   await supabaseAdmin()
     .from('automation_pending_executions')
     .update({ status })

@@ -12,6 +12,12 @@ const h = vi.hoisted(() => ({
     updateCalls: [] as { table: string; filters: [string, string, unknown][] }[],
     upsertCalls: [] as { table: string; payload: unknown }[],
     logUpdates: [] as Record<string, unknown>[],
+    // accounts.is_active — defaults to an active account so every
+    // pre-existing test below keeps its original behavior; only the
+    // "inactive account" tests flip this to false.
+    accountActive: true,
+    automation: null as Record<string, unknown> | null,
+    pendingUpdates: [] as { id: string; status: string }[],
   },
 }));
 
@@ -44,7 +50,29 @@ vi.mock("./admin-client", () => {
       }
       return { data: null, error: null };
     }
-    if (table === "automations") return { data: state.automations, error: null };
+    if (table === "accounts") {
+      return { data: { is_active: state.accountActive }, error: null };
+    }
+    if (table === "automation_pending_executions") {
+      if (type === "update") {
+        const idFilter = ops.filters.find((f) => f[1] === "id");
+        state.pendingUpdates.push({
+          id: idFilter ? String(idFilter[2]) : "",
+          status: (ops.payload as { status?: string } | undefined)?.status ?? "",
+        });
+      }
+      return { data: null, error: null };
+    }
+    if (table === "automations") {
+      // resumePendingExecution looks up ONE automation by id
+      // (.single()); runAutomationsForTrigger looks up the matching
+      // set by account_id/trigger_type/is_active. Distinguish by
+      // whether an `id` filter is present.
+      if (ops.filters.some((f) => f[1] === "id")) {
+        return { data: state.automation, error: null };
+      }
+      return { data: state.automations, error: null };
+    }
     if (table === "automation_logs") {
       if (type === "insert") return { data: { id: "log1" }, error: null };
       if (type === "update") {
@@ -100,7 +128,7 @@ vi.mock("./meta-send", () => ({
   engineSendInteractive: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
 }));
 
-import { runAutomationsForTrigger, triggerMatches } from "./engine";
+import { resumePendingExecution, runAutomationsForTrigger, triggerMatches } from "./engine";
 import type { Automation } from "@/types";
 
 const ACCOUNT = "acct-1";
@@ -114,6 +142,9 @@ beforeEach(() => {
   h.state.updateCalls = [];
   h.state.upsertCalls = [];
   h.state.logUpdates = [];
+  h.state.accountActive = true;
+  h.state.automation = null;
+  h.state.pendingUpdates = [];
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -167,6 +198,77 @@ describe("runAutomationsForTrigger — tenant isolation", () => {
     const filters = h.state.updateCalls[0].filters;
     expect(filters).toContainEqual(["eq", "id", "c1"]);
     expect(filters).toContainEqual(["eq", "account_id", ACCOUNT]);
+  });
+});
+
+describe("runAutomationsForTrigger — inactive account (accounts.is_active = false)", () => {
+  it("never dispatches for a disabled account — no automations/contacts query at all", async () => {
+    h.state.accountActive = false;
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [updateStep()];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: {},
+    });
+
+    expect(h.state.fromCalls).toContain("accounts");
+    expect(h.state.fromCalls).not.toContain("automations");
+    expect(h.state.fromCalls).not.toContain("contacts");
+    expect(h.state.updateCalls).toHaveLength(0);
+  });
+
+  it("an active account keeps dispatching normally (no regression)", async () => {
+    h.state.accountActive = true;
+    h.state.owned = { id: "c1" };
+    h.state.automations = [];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: {},
+    });
+
+    expect(h.state.fromCalls).toContain("automations");
+  });
+});
+
+describe("resumePendingExecution — inactive account", () => {
+  const PENDING = {
+    id: "pending-1",
+    automation_id: "a1",
+    user_id: "u1",
+    account_id: ACCOUNT,
+    contact_id: "c1",
+    log_id: null,
+    parent_step_id: null,
+    branch: null as "yes" | "no" | null,
+    next_step_position: 0,
+    context: {},
+  };
+
+  it("reverts the pending row back to 'pending' (not failed/done) instead of executing — no work is lost", async () => {
+    h.state.accountActive = false;
+    h.state.automation = { id: "a1", account_id: ACCOUNT, is_active: true };
+
+    await resumePendingExecution(PENDING);
+
+    expect(h.state.fromCalls).not.toContain("automation_steps");
+    expect(h.state.pendingUpdates).toEqual([{ id: "pending-1", status: "pending" }]);
+  });
+
+  it("an active account resumes normally and marks the row done (no regression)", async () => {
+    h.state.accountActive = true;
+    h.state.automation = { id: "a1", account_id: ACCOUNT, is_active: true };
+    h.state.steps = [];
+
+    await resumePendingExecution(PENDING);
+
+    expect(h.state.pendingUpdates).toEqual([{ id: "pending-1", status: "done" }]);
   });
 });
 

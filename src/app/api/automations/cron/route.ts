@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { resumePendingExecution } from '@/lib/automations/engine'
 import type { AutomationContext } from '@/lib/automations/engine'
+import { getActiveAccountIds } from '@/lib/accounts/active'
 
 /**
  * Drain due `automation_pending_executions` rows. Meant to be hit
@@ -42,8 +43,24 @@ export async function GET(request: Request) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   if (!due || due.length === 0) return NextResponse.json({ processed: 0 })
 
+  // Empresa desativada: pula sem reivindicar (status continua
+  // 'pending', nenhum dado é apagado ou perdido) — checagem em lote
+  // (uma query para todo o batch) em vez de uma por linha, já que
+  // account_id se repete entre linhas do mesmo tenant.
+  const activeAccountIds = await getActiveAccountIds(
+    admin,
+    due.map((row) => row.account_id as string),
+  )
+  const dueForActiveAccounts = due.filter((row) =>
+    activeAccountIds.has(row.account_id as string),
+  )
+  const skippedInactive = due.length - dueForActiveAccounts.length
+  if (skippedInactive > 0) {
+    console.warn(`[automations-cron] skipped ${skippedInactive} row(s) for inactive account(s)`)
+  }
+
   let processed = 0
-  for (const row of due) {
+  for (const row of dueForActiveAccounts) {
     const { data: claim } = await admin
       .from('automation_pending_executions')
       .update({ status: 'running' })
@@ -70,5 +87,5 @@ export async function GET(request: Request) {
     processed++
   }
 
-  return NextResponse.json({ processed })
+  return NextResponse.json({ processed, skipped_inactive: skippedInactive })
 }
