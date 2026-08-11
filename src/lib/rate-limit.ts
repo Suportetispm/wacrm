@@ -164,6 +164,13 @@ export const RATE_LIMITS = {
    *  key past the provider's own rate limit. 60/min ≈ three busy agents
    *  drafting flat-out. */
   aiDraftAccount: { limit: 60, windowMs: 60_000 },
+  /** Ticket operational actions (claim/transfer-queue/transfer-agent/
+   *  waiting-customer/resume/close), per user, shared across all six
+   *  — see supabase/migrations/049_ticket_operations.sql. 30/min is
+   *  generous for a human working a busy shift (one action every 2s
+   *  sustained) while bounding a runaway script or a misbehaving UI
+   *  retry loop. GET /api/tickets is read-only and not rate-limited. */
+  ticketAction: { limit: 30, windowMs: 60_000 },
   /** AI auto-reply generation, per account. The per-conversation cap
    *  (`auto_reply_max_per_conversation`) bounds one thread; this bounds
    *  the whole account across threads, so a burst of inbound from many

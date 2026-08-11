@@ -57,7 +57,7 @@ export async function GET(
         : Promise.resolve({ data: null }),
       supabase
         .from('conversations')
-        .select('id, contact:contacts(id, name, phone)')
+        .select('id, status, contact:contacts(id, name, phone)')
         .eq('id', ticket.conversation_id)
         .maybeSingle(),
       supabase
@@ -72,6 +72,10 @@ export async function GET(
         ...ticket,
         queue: queue ?? null,
         contact: conversation?.contact ?? null,
+        // Same round trip as the contact join — `status` is one more
+        // selected column, not an extra query. See GET /api/tickets
+        // for why this is hydrated (5-state operational status).
+        conversation_status: conversation?.status ?? null,
       },
       events: events ?? [],
     })

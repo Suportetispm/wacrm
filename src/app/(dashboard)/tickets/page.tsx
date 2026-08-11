@@ -34,13 +34,28 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import type { Queue, Ticket, TicketPriority, TicketStatus } from '@/types';
+import {
+  deriveOperationalStatus,
+  matchesOperationalStatusFilter,
+  ticketStatusParamForFilter,
+  type OperationalStatus,
+} from '@/lib/tickets/status';
+import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import type { AccountMember, Queue, Ticket, TicketPriority } from '@/types';
 
 const PRIORITY_BADGE: Record<TicketPriority, string> = {
   low: 'bg-slate-500/15 text-slate-600 dark:text-slate-400',
   normal: 'bg-blue-500/15 text-blue-600 dark:text-blue-400',
   high: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
   urgent: 'bg-red-500/15 text-red-600 dark:text-red-400',
+};
+
+const OP_STATUS_BADGE: Record<OperationalStatus, string> = {
+  in_queue: 'bg-slate-500/15 text-slate-600 dark:text-slate-400',
+  in_progress: 'bg-primary/15 text-primary',
+  waiting_customer: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+  closed: 'bg-muted text-muted-foreground',
+  finalized: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
 };
 
 function fmtDate(iso: string): string {
@@ -57,19 +72,30 @@ export default function TicketsPage() {
   const t = useTranslations('Tickets');
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [queues, setQueues] = useState<Queue[]>([]);
+  const [members, setMembers] = useState<AccountMember[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState<TicketStatus | 'all'>('open');
+  const [opStatus, setOpStatus] = useState<OperationalStatus | 'all'>('in_queue');
   const [queueId, setQueueId] = useState<string>('all');
+  const [assignedAgentId, setAssignedAgentId] = useState<string>('all');
   const [priority, setPriority] = useState<TicketPriority | 'all'>('all');
   const [q, setQ] = useState('');
   const [openDialog, setOpenDialog] = useState(false);
 
-  const STATUS_TABS: { value: TicketStatus | 'all'; label: string }[] = [
-    { value: 'open', label: t('statusOpen') },
-    { value: 'pending', label: t('statusPending') },
-    { value: 'closed', label: t('statusClosed') },
-    { value: 'all', label: t('statusAll') },
+  const OP_STATUS_TABS: { value: OperationalStatus | 'all'; label: string }[] = [
+    { value: 'in_queue', label: t('opStatusInQueue') },
+    { value: 'in_progress', label: t('opStatusInProgress') },
+    { value: 'waiting_customer', label: t('opStatusWaitingCustomer') },
+    { value: 'closed', label: t('opStatusClosed') },
+    { value: 'finalized', label: t('opStatusFinalized') },
+    { value: 'all', label: t('opStatusAll') },
   ];
+  const OP_STATUS_LABEL: Record<OperationalStatus, string> = {
+    in_queue: t('opStatusInQueue'),
+    in_progress: t('opStatusInProgress'),
+    waiting_customer: t('opStatusWaitingCustomer'),
+    closed: t('opStatusClosed'),
+    finalized: t('opStatusFinalized'),
+  };
   const PRIORITY_LABEL: Record<TicketPriority, string> = {
     low: t('priorityLow'),
     normal: t('priorityNormal'),
@@ -81,20 +107,31 @@ export default function TicketsPage() {
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      if (status !== 'all') params.set('status', status);
+      const serverStatus = ticketStatusParamForFilter(opStatus);
+      if (serverStatus) params.set('status', serverStatus);
       if (queueId !== 'all') params.set('queue_id', queueId);
+      if (assignedAgentId !== 'all') params.set('assigned_agent_id', assignedAgentId);
       if (priority !== 'all') params.set('priority', priority);
       if (q.trim()) params.set('q', q.trim());
 
       const res = await fetch(`/api/tickets?${params.toString()}`, { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
-      if (res.ok) setTickets((data.tickets as Ticket[]) ?? []);
-      else toast.error(data.error ?? t('loadFailed'));
+      if (res.ok) {
+        const all = (data.tickets as Ticket[]) ?? [];
+        // Client-side refinement on top of the server's coarser
+        // `status` fetch — see ticketStatusParamForFilter's doc
+        // comment (src/lib/tickets/status.ts) for why the split
+        // between in_queue/in_progress and closed/finalized isn't
+        // done server-side.
+        setTickets(all.filter((ticket) => matchesOperationalStatusFilter(ticket, opStatus)));
+      } else {
+        toast.error(data.error ?? t('loadFailed'));
+      }
     } finally {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, queueId, priority, q]);
+  }, [opStatus, queueId, assignedAgentId, priority, q]);
 
   useEffect(() => {
     void load();
@@ -105,7 +142,13 @@ export default function TicketsPage() {
       .then((r) => r.json())
       .then((d) => setQueues((d.queues as Queue[]) ?? []))
       .catch(() => {});
+    fetchAccountMembers().then(setMembers);
   }, []);
+
+  const memberById = new Map(members.map((m) => [m.user_id, m]));
+  // Owner/admin/agent can all end up as assigned_agent_id (claim_ticket
+  // lets an owner claim too) — viewer never can, so it's excluded here.
+  const assignableMembers = members.filter((m) => m.role !== 'viewer');
 
   return (
     <div>
@@ -123,47 +166,56 @@ export default function TicketsPage() {
       </div>
 
       <div className="mt-6 flex flex-wrap items-center gap-2">
-        {STATUS_TABS.map((tab) => (
+        {OP_STATUS_TABS.map((tab) => (
           <Button
             key={tab.value}
-            variant={status === tab.value ? 'default' : 'outline'}
+            variant={opStatus === tab.value ? 'default' : 'outline'}
             size="sm"
-            onClick={() => setStatus(tab.value)}
+            onClick={() => setOpStatus(tab.value)}
           >
             {tab.label}
           </Button>
         ))}
+      </div>
 
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder={t('searchPlaceholder')}
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              className="w-56 pl-8"
-            />
-          </div>
-          <Select value={queueId} onValueChange={(v) => setQueueId(v ?? 'all')}>
-            <SelectTrigger className="w-40"><SelectValue placeholder={t('queueFilterPlaceholder')} /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t('allQueues')}</SelectItem>
-              {queues.map((qu) => (
-                <SelectItem key={qu.id} value={qu.id}>{qu.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={priority} onValueChange={(v) => setPriority((v ?? 'all') as TicketPriority | 'all')}>
-            <SelectTrigger className="w-32"><SelectValue placeholder={t('priorityFilterPlaceholder')} /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t('allPriorities')}</SelectItem>
-              <SelectItem value="low">{PRIORITY_LABEL.low}</SelectItem>
-              <SelectItem value="normal">{PRIORITY_LABEL.normal}</SelectItem>
-              <SelectItem value="high">{PRIORITY_LABEL.high}</SelectItem>
-              <SelectItem value="urgent">{PRIORITY_LABEL.urgent}</SelectItem>
-            </SelectContent>
-          </Select>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder={t('searchPlaceholder')}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="w-56 pl-8"
+          />
         </div>
+        <Select value={queueId} onValueChange={(v) => setQueueId(v ?? 'all')}>
+          <SelectTrigger className="w-40"><SelectValue placeholder={t('queueFilterPlaceholder')} /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t('allQueues')}</SelectItem>
+            {queues.map((qu) => (
+              <SelectItem key={qu.id} value={qu.id}>{qu.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={assignedAgentId} onValueChange={(v) => setAssignedAgentId(v ?? 'all')}>
+          <SelectTrigger className="w-40"><SelectValue placeholder={t('assigneeFilterPlaceholder')} /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t('allAssignees')}</SelectItem>
+            {assignableMembers.map((m) => (
+              <SelectItem key={m.user_id} value={m.user_id}>{memberLabel(m)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={priority} onValueChange={(v) => setPriority((v ?? 'all') as TicketPriority | 'all')}>
+          <SelectTrigger className="w-32"><SelectValue placeholder={t('priorityFilterPlaceholder')} /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t('allPriorities')}</SelectItem>
+            <SelectItem value="low">{PRIORITY_LABEL.low}</SelectItem>
+            <SelectItem value="normal">{PRIORITY_LABEL.normal}</SelectItem>
+            <SelectItem value="high">{PRIORITY_LABEL.high}</SelectItem>
+            <SelectItem value="urgent">{PRIORITY_LABEL.urgent}</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="mt-4">
@@ -177,49 +229,93 @@ export default function TicketsPage() {
             {t('empty')}
           </div>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t('colNumber')}</TableHead>
-                <TableHead>{t('colContact')}</TableHead>
-                <TableHead>{t('colQueue')}</TableHead>
-                <TableHead>{t('colStatus')}</TableHead>
-                <TableHead>{t('colPriority')}</TableHead>
-                <TableHead>{t('colOpened')}</TableHead>
-                <TableHead>{t('colUpdated')}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tickets.map((ticket) => (
-                <TableRow key={ticket.id} className="cursor-pointer">
-                  <TableCell>
-                    <Link href={`/tickets/${ticket.id}`} className="font-medium hover:underline">
-                      #{ticket.ticket_number}
-                    </Link>
-                  </TableCell>
-                  <TableCell>{ticket.contact?.name || ticket.contact?.phone || '—'}</TableCell>
-                  <TableCell>
-                    {ticket.queue ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="size-2 rounded-full" style={{ backgroundColor: ticket.queue.color }} />
-                        {ticket.queue.name}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">{t('untriaged')}</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="capitalize">
-                    {ticket.status === 'open' ? t('statusOpen') : ticket.status === 'pending' ? t('statusPending') : t('statusClosed')}
-                  </TableCell>
-                  <TableCell>
-                    <Badge className={PRIORITY_BADGE[ticket.priority]}>{PRIORITY_LABEL[ticket.priority]}</Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{fmtDate(ticket.opened_at)}</TableCell>
-                  <TableCell className="text-muted-foreground">{fmtDate(ticket.updated_at)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <>
+            {/* Desktop: table. */}
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('colNumber')}</TableHead>
+                    <TableHead>{t('colContact')}</TableHead>
+                    <TableHead>{t('colPhone')}</TableHead>
+                    <TableHead>{t('colQueue')}</TableHead>
+                    <TableHead>{t('colAssignee')}</TableHead>
+                    <TableHead>{t('colPriority')}</TableHead>
+                    <TableHead>{t('colStatus')}</TableHead>
+                    <TableHead>{t('colOpened')}</TableHead>
+                    <TableHead>{t('colUpdated')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tickets.map((ticket) => {
+                    const opState = deriveOperationalStatus(ticket);
+                    const assignee = ticket.assigned_agent_id ? memberById.get(ticket.assigned_agent_id) : null;
+                    return (
+                      <TableRow key={ticket.id} className="cursor-pointer">
+                        <TableCell>
+                          <Link href={`/tickets/${ticket.id}`} className="font-medium hover:underline">
+                            #{ticket.ticket_number}
+                          </Link>
+                        </TableCell>
+                        <TableCell>{ticket.contact?.name || '—'}</TableCell>
+                        <TableCell className="text-muted-foreground">{ticket.contact?.phone || '—'}</TableCell>
+                        <TableCell>
+                          {ticket.queue ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className="size-2 rounded-full" style={{ backgroundColor: ticket.queue.color }} />
+                              {ticket.queue.name}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">{t('untriaged')}</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {assignee ? memberLabel(assignee) : <span className="text-muted-foreground">{t('unassigned')}</span>}
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={PRIORITY_BADGE[ticket.priority]}>{PRIORITY_LABEL[ticket.priority]}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={OP_STATUS_BADGE[opState]}>{OP_STATUS_LABEL[opState]}</Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{fmtDate(ticket.opened_at)}</TableCell>
+                        <TableCell className="text-muted-foreground">{fmtDate(ticket.updated_at)}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            {/* Mobile: cards. */}
+            <div className="flex flex-col gap-3 md:hidden">
+              {tickets.map((ticket) => {
+                const opState = deriveOperationalStatus(ticket);
+                const assignee = ticket.assigned_agent_id ? memberById.get(ticket.assigned_agent_id) : null;
+                return (
+                  <Link
+                    key={ticket.id}
+                    href={`/tickets/${ticket.id}`}
+                    className="block rounded-lg border border-border p-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-medium text-foreground">#{ticket.ticket_number} · {ticket.contact?.name || ticket.contact?.phone || '—'}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {ticket.queue?.name ?? t('untriaged')} · {assignee ? memberLabel(assignee) : t('unassigned')}
+                        </p>
+                      </div>
+                      <Badge className={OP_STATUS_BADGE[opState]}>{OP_STATUS_LABEL[opState]}</Badge>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                      <Badge className={PRIORITY_BADGE[ticket.priority]}>{PRIORITY_LABEL[ticket.priority]}</Badge>
+                      <span>{fmtDate(ticket.updated_at)}</span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 

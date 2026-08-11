@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getCurrentAccount, toErrorResponse } from '@/lib/auth/account'
+import { isUuid } from '@/lib/uuid'
 import type { TicketPriority, TicketStatus } from '@/types'
 
 // GET /api/tickets — list with filters. RLS-scoped (tickets_select):
@@ -30,6 +31,7 @@ export async function GET(request: Request) {
     const status = url.searchParams.get('status')
     const queueId = url.searchParams.get('queue_id')
     const assignedAgentId = url.searchParams.get('assigned_agent_id')
+    const conversationId = url.searchParams.get('conversation_id')
     const priority = url.searchParams.get('priority')
     const q = url.searchParams.get('q')?.trim() ?? ''
     const page = Math.max(1, Number(url.searchParams.get('page')) || 1)
@@ -46,8 +48,28 @@ export async function GET(request: Request) {
       }
       query = query.eq('status', status)
     }
-    if (queueId) query = query.eq('queue_id', queueId)
-    if (assignedAgentId) query = query.eq('assigned_agent_id', assignedAgentId)
+    if (queueId) {
+      if (!isUuid(queueId)) {
+        return NextResponse.json({ error: "'queue_id' must be a valid UUID" }, { status: 400 })
+      }
+      query = query.eq('queue_id', queueId)
+    }
+    if (assignedAgentId) {
+      if (!isUuid(assignedAgentId)) {
+        return NextResponse.json({ error: "'assigned_agent_id' must be a valid UUID" }, { status: 400 })
+      }
+      query = query.eq('assigned_agent_id', assignedAgentId)
+    }
+    // Lets a caller (the future Inbox badge, per 6E.1) ask "does this
+    // conversation have a ticket right now?" without a dedicated
+    // endpoint — combines with every other filter above via AND, same
+    // as they already combine with each other.
+    if (conversationId) {
+      if (!isUuid(conversationId)) {
+        return NextResponse.json({ error: "'conversation_id' must be a valid UUID" }, { status: 400 })
+      }
+      query = query.eq('conversation_id', conversationId)
+    }
     if (priority) {
       if (!PRIORITIES.includes(priority as TicketPriority)) {
         return NextResponse.json({ error: `priority must be one of: ${PRIORITIES.join(', ')}` }, { status: 400 })
@@ -113,22 +135,28 @@ export async function GET(request: Request) {
         : Promise.resolve({ data: [] as { id: string; name: string; color: string }[] }),
       supabase
         .from('conversations')
-        .select('id, contact:contacts(id, name, phone)')
+        .select('id, status, contact:contacts(id, name, phone)')
         .in('id', conversationIds),
     ])
 
     const queueById = new Map((queues ?? []).map((q2) => [q2.id, q2]))
-    const contactByConversationId = new Map(
+    // Same round trip already fetching the contact join — `status` is
+    // one more selected column, not an extra query. Only used to
+    // derive the 5-state operational status client-side (closed vs
+    // finalized, see src/lib/tickets/status.ts); tickets.status stays
+    // the source of truth for everything else, unchanged.
+    const conversationById = new Map(
       (conversations ?? []).map((c) => [
         c.id,
-        (c.contact ?? null) as unknown as { id: string; name: string | null; phone: string } | null,
+        c as unknown as { id: string; status: string; contact: { id: string; name: string | null; phone: string } | null },
       ]),
     )
 
     const hydrated = tickets.map((t) => ({
       ...t,
       queue: t.queue_id ? (queueById.get(t.queue_id) ?? null) : null,
-      contact: contactByConversationId.get(t.conversation_id) ?? null,
+      contact: conversationById.get(t.conversation_id)?.contact ?? null,
+      conversation_status: conversationById.get(t.conversation_id)?.status ?? null,
     }))
 
     return NextResponse.json({ tickets: hydrated, total: count ?? hydrated.length, page, pageSize })

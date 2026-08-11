@@ -75,6 +75,10 @@ export interface AccountMember {
   avatar_url: string | null;
   role: AccountRole;
   joined_at: string;
+  /** profiles.is_active (migration 048). Added 6E.4 for ticket
+   *  transfer-agent candidate filtering — a deactivated member can
+   *  never be a valid transfer target. */
+  is_active: boolean;
 }
 
 /**
@@ -744,6 +748,12 @@ export interface Ticket {
   /** Hydrated by list/detail routes. */
   queue?: { id: string; name: string; color: string } | null;
   contact?: { id: string; name: string | null; phone: string } | null;
+  /** Hydrated by list/detail routes (6E.4) — the linked conversation's
+   *  own status, read-only here. Combined with `status`/
+   *  `assigned_agent_id` to derive the 5-state operational status
+   *  shown in the UI (see src/lib/tickets/status.ts) — never written
+   *  back through this type. */
+  conversation_status?: ConversationStatus | null;
 }
 
 export type TicketEventType =
