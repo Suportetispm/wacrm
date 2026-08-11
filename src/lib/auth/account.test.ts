@@ -66,9 +66,8 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: () => createClient(),
 }));
 
-const { getCurrentAccount, UnauthorizedError, ForbiddenError } = await import(
-  "./account"
-);
+const { getCurrentAccount, UnauthorizedError, ForbiddenError, AccountDisabledError, toErrorResponse } =
+  await import("./account");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -172,5 +171,80 @@ describe("getCurrentAccount", () => {
     await expect(getCurrentAccount()).rejects.toThrow(
       "Profile is not linked to an account",
     );
+  });
+
+  // profiles.is_active — migration 048_platform_user_management.sql.
+  it("throws AccountDisabledError (never a bare ForbiddenError) when the profile is explicitly deactivated", async () => {
+    const { client } = makeClient({
+      user: { id: "user-1" },
+      byTable: {
+        profiles: {
+          data: { account_id: "acct-1", account_role: "agent", is_active: false },
+          error: null,
+        },
+      },
+    });
+    createClient.mockReturnValue(client);
+    await expect(getCurrentAccount()).rejects.toBeInstanceOf(AccountDisabledError);
+  });
+
+  it("does not deactivate an owner/admin whose profile row predates is_active (undefined, not false)", async () => {
+    // Regression guard: existing rows / test mocks that don't carry
+    // `is_active` at all must resolve normally — only an explicit
+    // `false` blocks. The DB column is NOT NULL DEFAULT true, so
+    // `undefined` only happens for pre-048 shapes/mocks, never in
+    // production, but the code must not punish that shape.
+    const { client } = makeClient({
+      user: { id: "owner-1" },
+      byTable: {
+        profiles: {
+          data: { account_id: "acct-1", account_role: "owner" },
+          error: null,
+        },
+        accounts: { data: { id: "acct-1", name: "Acme" }, error: null },
+      },
+    });
+    createClient.mockReturnValue(client);
+    const ctx = await getCurrentAccount();
+    expect(ctx.role).toBe("owner");
+  });
+
+  it("passes through normally when is_active is explicitly true", async () => {
+    const { client } = makeClient({
+      user: { id: "user-1" },
+      byTable: {
+        profiles: {
+          data: { account_id: "acct-1", account_role: "agent", is_active: true },
+          error: null,
+        },
+        accounts: { data: { id: "acct-1", name: "Acme" }, error: null },
+      },
+    });
+    createClient.mockReturnValue(client);
+    const ctx = await getCurrentAccount();
+    expect(ctx.role).toBe("agent");
+  });
+});
+
+describe("toErrorResponse", () => {
+  it("maps AccountDisabledError to 403 with its message", async () => {
+    const res = toErrorResponse(new AccountDisabledError());
+    const json = await res.json();
+    expect(res.status).toBe(403);
+    expect(json.error).toBe("Your access has been disabled");
+  });
+
+  it("still maps UnauthorizedError to 401 and ForbiddenError to 403 (unchanged)", async () => {
+    const unauthorized = toErrorResponse(new UnauthorizedError());
+    expect(unauthorized.status).toBe(401);
+    const forbidden = toErrorResponse(new ForbiddenError());
+    expect(forbidden.status).toBe(403);
+  });
+
+  it("collapses an unclassified error to a generic 500, never leaking err.message", async () => {
+    const res = toErrorResponse(new Error("raw internal SQL detail"));
+    const json = await res.json();
+    expect(res.status).toBe(500);
+    expect(json.error).toBe("Internal server error");
   });
 });

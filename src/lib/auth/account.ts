@@ -55,6 +55,27 @@ export class ForbiddenError extends Error {
 }
 
 /**
+ * Thrown by getCurrentAccount() when the caller's own profile has
+ * `is_active = false` (migration 048_platform_user_management.sql —
+ * distinct from a company-wide accounts.is_active=false, which
+ * ForbiddenError already covers indistinguishably from an orphaned
+ * profile, by design — see 047's comments).
+ *
+ * A dedicated subclass (rather than reusing ForbiddenError) exists
+ * because this ONE case needs different UI treatment: the caller
+ * knows exactly why they were denied and should be sent to a
+ * friendly "your access was disabled" page, not a bare 403. See
+ * src/app/(dashboard)/layout.tsx.
+ */
+export class AccountDisabledError extends Error {
+  readonly status = 403 as const;
+  constructor(message = "Your access has been disabled") {
+    super(message);
+    this.name = "AccountDisabledError";
+  }
+}
+
+/**
  * Convert one of the typed errors above (or anything else) into a
  * `NextResponse`. Routes can do:
  *
@@ -67,7 +88,11 @@ export class ForbiddenError extends Error {
  * server internals out of the wire.
  */
 export function toErrorResponse(err: unknown): NextResponse {
-  if (err instanceof UnauthorizedError || err instanceof ForbiddenError) {
+  if (
+    err instanceof UnauthorizedError ||
+    err instanceof ForbiddenError ||
+    err instanceof AccountDisabledError
+  ) {
     return NextResponse.json({ error: err.message }, { status: err.status });
   }
   console.error("[toErrorResponse] uncategorized error:", err);
@@ -116,7 +141,7 @@ export async function getCurrentAccount(): Promise<AccountContext> {
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("account_id, account_role")
+    .select("account_id, account_role, is_active")
     .eq("user_id", user.id)
     .maybeSingle();
 
@@ -129,6 +154,15 @@ export async function getCurrentAccount(): Promise<AccountContext> {
     // signup trigger. The user is authenticated but the app has
     // no way to scope their queries — treat as forbidden.
     throw new ForbiddenError("Profile is not linked to an account");
+  }
+  // Strict `=== false` (never `!data.is_active`): a profile row from
+  // before migration 048 or a mock without the column resolves
+  // `is_active` as `undefined`, which must NOT be treated as
+  // disabled — only an explicit `false` does. The DB column itself
+  // is NOT NULL DEFAULT true, so this only ever matters for
+  // pre-migration data shapes / tests.
+  if (data.is_active === false) {
+    throw new AccountDisabledError();
   }
   if (!isAccountRole(data.account_role)) {
     // The DB enum should make this impossible, but a future

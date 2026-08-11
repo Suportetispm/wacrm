@@ -1,5 +1,5 @@
-import { AdminPlaceholder } from "@/components/admin/admin-placeholder";
+import { UsersPanel } from "@/components/admin/users-panel";
 
 export default function AdminUsersPage() {
-  return <AdminPlaceholder titleKey="usersTitle" descKey="usersDesc" />;
+  return <UsersPanel />;
 }
