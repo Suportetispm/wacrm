@@ -8,6 +8,7 @@ import {
   matchesContactFilters,
   matchesInboxFilters,
   normalizeConversations,
+  sortConversationsByRecentActivity,
   type InboxFilters,
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
@@ -266,7 +267,9 @@ export function ConversationList({
       });
     }
 
-    return result;
+    // Render-time ordering guarantee — see sortConversationsByRecentActivity's
+    // doc comment for why this isn't redundant with moveConversationToTop.
+    return sortConversationsByRecentActivity(result);
   }, [conversations, inboxFilters, search, selectedTagIds, selectedCompany]);
 
   const toggleTag = useCallback((id: string) => {

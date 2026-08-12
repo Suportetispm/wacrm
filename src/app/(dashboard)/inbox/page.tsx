@@ -6,11 +6,17 @@ import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
+  moveConversationToTop,
   normalizeConversation,
   reconcileLoadedConversations,
+  shouldRollbackConversationPreview,
+  updateConversationPreview,
 } from "@/lib/inbox/conversations";
+import { isOpenTransitionEligible } from "@/lib/inbox/auto-status";
+import { openPendingConversation, sweepStaleConversations } from "@/lib/inbox/status-automation";
 import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
+import { useAuth } from "@/hooks/use-auth";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
@@ -18,6 +24,13 @@ import { NewConversationModal } from "@/components/inbox/new-conversation-modal"
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/** How often the light background sweep for the 10-minute pending
+ *  reversion runs, independent of resyncToken (which also drives a
+ *  full conversations/messages refetch — this must NOT piggyback on
+ *  that, or the "no aggressive polling / no full Inbox refetch" rule
+ *  would be violated). Midpoint of the agreed 90-120s window. */
+const STALE_SWEEP_INTERVAL_MS = 100_000;
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
@@ -38,6 +51,7 @@ function InboxPageInner() {
   const t = useTranslations("Inbox.page");
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { user, accountRole } = useAuth();
   /**
    * `?c=<id>` deep-link support. Used when landing here from the
    * dashboard's recent-conversations list so the right thread opens
@@ -239,27 +253,36 @@ function InboxPageInner() {
           });
         }
 
-        // Update conversation list preview. We need to know *synchronously*
-        // whether the conv is already in state to decide between patching
-        // the preview and triggering a hydrate — see the comment on
-        // knownConvIdsRef for why a closure flag inside the updater would
-        // always read false here.
+        // Update conversation list preview and bump it to the top — a new
+        // message is always the most recent activity, whether it's the
+        // customer's inbound text or the realtime echo of our own
+        // outbound send confirming the optimistic bump from
+        // handleConversationActivity below. moveConversationToTop no-ops
+        // if it's already first, so this is safe to call unconditionally.
+        //
+        // We need to know *synchronously* whether the conv is already in
+        // state to decide between patching the preview and triggering a
+        // hydrate — see the comment on knownConvIdsRef for why a closure
+        // flag inside the updater would always read false here.
         if (knownConvIdsRef.current.has(newMsg.conversation_id)) {
-          setConversations((prev) =>
-            prev.map((c) =>
-              c.id === newMsg.conversation_id
-                ? {
-                    ...c,
-                    last_message_text: newMsg.content_text ?? "",
-                    last_message_at: newMsg.created_at,
-                    unread_count:
-                      activeConversation?.id === newMsg.conversation_id
-                        ? 0
-                        : c.unread_count + 1,
-                  }
-                : c,
-            ),
-          );
+          setConversations((prev) => {
+            const current = prev.find(
+              (c) => c.id === newMsg.conversation_id,
+            );
+            const patched = updateConversationPreview(
+              prev,
+              newMsg.conversation_id,
+              {
+                last_message_text: newMsg.content_text ?? "",
+                last_message_at: newMsg.created_at,
+                unread_count:
+                  activeConversation?.id === newMsg.conversation_id
+                    ? 0
+                    : (current?.unread_count ?? 0) + 1,
+              },
+            );
+            return moveConversationToTop(patched, newMsg.conversation_id);
+          });
         } else {
           // First time we're seeing this conv: the conv-INSERT event
           // hasn't landed yet, or was missed. Hydrate from the DB so
@@ -312,8 +335,25 @@ function InboxPageInner() {
           // back on for the ~100ms it takes for the reset effect's server
           // UPDATE to round-trip. Non-active convs take the value as-is.
           const isActive = activeConversation?.id === conv.id;
-          setConversations((prev) =>
-            prev.map((c) =>
+          setConversations((prev) => {
+            // Only bump position when this UPDATE reflects real new
+            // activity (last_message_at actually changed from what we
+            // already had) — a status flip or an assignment change also
+            // fires a conversations UPDATE, and those must NOT jump the
+            // conversation to the top. Compared against our own prior
+            // state rather than the realtime payload's `old`: the
+            // `conversations` table isn't REPLICA IDENTITY FULL, so
+            // Postgres only ever sends the primary key in `old` — its
+            // `last_message_at` is always undefined and can't be used
+            // for this comparison. This is a defensive secondary path:
+            // the message INSERT handler above already reorders for the
+            // common case, but a missed/out-of-order INSERT event
+            // shouldn't leave the list stuck stale.
+            const current = prev.find((c) => c.id === conv.id);
+            const activityChanged =
+              !!conv.last_message_at &&
+              current?.last_message_at !== conv.last_message_at;
+            const merged = prev.map((c) =>
               c.id === conv.id
                 ? {
                     ...c,
@@ -321,8 +361,11 @@ function InboxPageInner() {
                     unread_count: isActive ? 0 : conv.unread_count,
                   }
                 : c,
-            ),
-          );
+            );
+            return activityChanged
+              ? moveConversationToTop(merged, conv.id)
+              : merged;
+          });
         } else {
           // UPDATE arrived before the INSERT (or after a missed INSERT)
           // — fetch the row so it surfaces with its contact joined. The
@@ -396,6 +439,43 @@ function InboxPageInner() {
   }, []);
 
   /**
+   * 10-minute pending-reversion sweep — fires opportunistically on the
+   * exact same events that already trigger a resync (mount, WS
+   * reconnect, tab visibility regain, manual refresh button), plus a
+   * light interval below for the case where the Inbox sits open and
+   * idle without any of those. Deliberately does NOT read `resyncToken`
+   * changes as "refetch the list" — this only ever calls
+   * sweepStaleConversations, a single lightweight query + guarded
+   * per-row updates, never the full conversations/messages refetch
+   * resyncToken itself drives elsewhere. Any row it actually reverts
+   * arrives back into `conversations` state through the existing
+   * Realtime `conversations` UPDATE handler, not through a local patch
+   * here — status-only changes there already skip reordering (Parte 9).
+   *
+   * Skipped for `viewer` role (RLS would filter its writes to 0 rows
+   * anyway — a real member of the account, just least-privileged) and
+   * while the role hasn't resolved yet.
+   */
+  useEffect(() => {
+    if (accountRole !== "agent" && accountRole !== "admin" && accountRole !== "owner") return;
+    const supabase = createClient();
+    sweepStaleConversations(supabase).catch((error) => {
+      console.error("Stale-conversation sweep failed:", error);
+    });
+  }, [resyncToken, accountRole]);
+
+  useEffect(() => {
+    if (accountRole !== "agent" && accountRole !== "admin" && accountRole !== "owner") return;
+    const interval = setInterval(() => {
+      const supabase = createClient();
+      sweepStaleConversations(supabase).catch((error) => {
+        console.error("Stale-conversation sweep failed:", error);
+      });
+    }, STALE_SWEEP_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [accountRole]);
+
+  /**
    * Manual refresh trigger for the thread-header refresh button.
    * Bumps the same resyncToken the reconnect / visibility paths use,
    * so it goes through the existing dedupe & refetch plumbing — no
@@ -404,6 +484,76 @@ function InboxPageInner() {
   const handleManualRefresh = useCallback(() => {
     setResyncToken((n) => n + 1);
   }, []);
+
+  /**
+   * Fires whenever an agent OPENS a 'pending' conversation — from the
+   * list click (handleSelectConversation) or the deep-link auto-select
+   * in handleConversationsLoaded below, the two places a conversation
+   * becomes "active". Optimistically applies the pending → in_progress
+   * (+ claim-if-unassigned) transition locally, then confirms/corrects
+   * against the DB via the guarded RPC-backed writes in
+   * status-automation.ts. isOpenTransitionEligible already filters out
+   * admin/owner callers and non-pending conversations, so this is a
+   * no-op call for every other case — safe to call unconditionally
+   * from both entry points without a separate guard at each call site.
+   */
+  const handleOpenPendingConversation = useCallback(
+    (conv: Conversation) => {
+      if (!user?.id || !isOpenTransitionEligible(conv, accountRole)) return;
+
+      const before = {
+        status: conv.status,
+        assigned_agent_id: conv.assigned_agent_id,
+      };
+      const optimisticAssignee = conv.assigned_agent_id ?? user.id;
+      const patch = {
+        status: "in_progress" as ConversationStatus,
+        assigned_agent_id: optimisticAssignee,
+      };
+
+      setConversations((prev) =>
+        prev.map((c) => (c.id === conv.id ? { ...c, ...patch } : c)),
+      );
+      setActiveConversation((prev) =>
+        prev && prev.id === conv.id ? { ...prev, ...patch } : prev,
+      );
+
+      const supabase = createClient();
+      openPendingConversation(supabase, conv, user.id)
+        .then((result) => {
+          if (result.outcome === "claimed" || result.outcome === "resumed") {
+            return; // optimistic guess confirmed, nothing to reconcile
+          }
+          if (result.outcome === "error") {
+            console.error("Failed to open pending conversation:", result.error);
+          }
+          // "not_applicable" (assigned to someone else, raced, ticketed,
+          // or no longer pending) or "error" — revert to what it was
+          // before; a genuine winning change elsewhere still arrives
+          // via the existing Realtime subscription.
+          setConversations((prev) =>
+            prev.map((c) => (c.id === conv.id ? { ...c, ...before } : c)),
+          );
+          setActiveConversation((prevActive) =>
+            prevActive && prevActive.id === conv.id
+              ? { ...prevActive, ...before }
+              : prevActive,
+          );
+        })
+        .catch((error) => {
+          console.error("Failed to open pending conversation:", error);
+          setConversations((prev) =>
+            prev.map((c) => (c.id === conv.id ? { ...c, ...before } : c)),
+          );
+          setActiveConversation((prevActive) =>
+            prevActive && prevActive.id === conv.id
+              ? { ...prevActive, ...before }
+              : prevActive,
+          );
+        });
+    },
+    [user?.id, accountRole],
+  );
 
   const handleConversationsLoaded = useCallback(
     (loaded: Conversation[]) => {
@@ -459,10 +609,11 @@ function InboxPageInner() {
               ),
             );
           }
+          handleOpenPendingConversation(match);
         }
       }
     },
-    [deepLinkConvId, activeConversation?.id]
+    [deepLinkConvId, activeConversation?.id, handleOpenPendingConversation]
   );
 
   const handleSelectConversation = useCallback(
@@ -503,8 +654,9 @@ function InboxPageInner() {
       // back in the same thread, and so copy-paste links work. Use
       // replace() to avoid polluting browser history with every click.
       router.replace(`/inbox?c=${conv.id}`, { scroll: false });
+      handleOpenPendingConversation(conv);
     },
-    [activeConversation?.id, router]
+    [activeConversation?.id, router, handleOpenPendingConversation]
   );
 
   // Mobile "back" — deselect the conversation so the list pane comes
@@ -552,6 +704,63 @@ function InboxPageInner() {
       );
     },
     []
+  );
+
+  /**
+   * Optimistic list bump fired the instant the agent hits Send (before
+   * the UAZAPI/Meta round-trip and the realtime confirmation that
+   * follows it) — moves the conversation to the top and updates its
+   * preview/timestamp immediately. handleMessageEvent and
+   * handleConversationEvent above converge on the exact same fields
+   * once the real event lands (via the same two helpers), so this is
+   * just a head start, not a second source of truth — the confirmation
+   * simply re-applies the (by then identical) values and no-ops the
+   * reorder since the conversation is already first.
+   */
+  const handleConversationActivity = useCallback(
+    (conversationId: string, previewText: string, at: string) => {
+      setConversations((prev) =>
+        moveConversationToTop(
+          updateConversationPreview(prev, conversationId, {
+            last_message_text: previewText,
+            last_message_at: at,
+          }),
+          conversationId,
+        ),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Reverts the preview fields set by handleConversationActivity when
+   * the send that triggered it turns out to have failed — otherwise a
+   * failed message would permanently leave the list showing its text/
+   * time as if it had gone through. Guarded on `optimisticAt` still
+   * being the conversation's current last_message_at: if genuine new
+   * activity (another message, inbound or outbound) landed for this
+   * conversation in the meantime, that must win instead of being
+   * clobbered by this rollback.
+   *
+   * Deliberately does NOT move the conversation back down — by the time
+   * a send fails, unrelated activity may have reordered the list
+   * further, and reconstructing "where it used to be" isn't worth the
+   * complexity for what's a rare, self-correcting (the next real
+   * activity fixes position anyway) edge case.
+   */
+  const handleConversationActivityRollback = useCallback(
+    (
+      conversationId: string,
+      optimisticAt: string,
+      previous: { last_message_text?: string; last_message_at?: string },
+    ) => {
+      setConversations((prev) =>
+        shouldRollbackConversationPreview(prev, conversationId, optimisticAt)
+          ? updateConversationPreview(prev, conversationId, previous)
+          : prev,
+      );
+    },
+    [],
   );
 
   const handleStatusChange = useCallback(
@@ -650,6 +859,8 @@ function InboxPageInner() {
             onMessagesLoaded={handleMessagesLoaded}
             onNewMessage={handleNewMessage}
             onUpdateMessage={handleUpdateMessage}
+            onOptimisticActivity={handleConversationActivity}
+            onOptimisticActivityRollback={handleConversationActivityRollback}
             onStatusChange={handleStatusChange}
             onAssignChange={handleAssignChange}
             onBack={handleCloseConversation}

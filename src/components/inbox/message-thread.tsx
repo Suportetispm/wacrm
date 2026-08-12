@@ -78,6 +78,31 @@ interface MessageThreadProps {
   onMessagesLoaded: (messages: Message[]) => void;
   onNewMessage: (message: Message) => void;
   onUpdateMessage: (id: string, updates: Partial<Message>) => void;
+  /**
+   * Fired the instant a send is kicked off (before the UAZAPI/Meta
+   * round-trip) so the conversation list can move this conversation to
+   * the top and show the new preview/timestamp immediately instead of
+   * waiting for the realtime confirmation. Optional so existing callers
+   * keep working.
+   */
+  onOptimisticActivity?: (
+    conversationId: string,
+    previewText: string,
+    at: string,
+  ) => void;
+  /**
+   * Fired when a send that triggered `onOptimisticActivity` fails —
+   * lets the parent revert the list preview it optimistically applied
+   * so a failed message doesn't permanently look like it went through.
+   * `optimisticAt` is the same timestamp passed to
+   * `onOptimisticActivity`, used by the parent to guard against
+   * clobbering genuinely newer activity that may have landed since.
+   */
+  onOptimisticActivityRollback?: (
+    conversationId: string,
+    optimisticAt: string,
+    previous: { last_message_text?: string; last_message_at?: string },
+  ) => void;
   onStatusChange: (conversationId: string, status: ConversationStatus) => void;
   onAssignChange: (
     conversationId: string,
@@ -172,6 +197,8 @@ export function MessageThread({
   onMessagesLoaded,
   onNewMessage,
   onUpdateMessage,
+  onOptimisticActivity,
+  onOptimisticActivityRollback,
   onStatusChange,
   onAssignChange,
   onBack,
@@ -512,8 +539,15 @@ export function MessageThread({
         created_at: new Date().toISOString(),
         reply_to_message_id: replyToId,
       };
+      // Snapshot the conversation's current preview so a send failure can
+      // restore it — captured before the bump below overwrites it.
+      const previousPreview = {
+        last_message_text: conversation.last_message_text,
+        last_message_at: conversation.last_message_at,
+      };
       onNewMessage(optimisticMsg);
       setReplyTo(null);
+      onOptimisticActivity?.(conversation.id, text, optimisticMsg.created_at);
 
       try {
         const res = await fetch("/api/whatsapp/send", {
@@ -535,6 +569,11 @@ export function MessageThread({
           toast.error(`Failed to send: ${reason}`);
           // Mark the optimistic bubble as failed so the user sees what happened
           onUpdateMessage(tempId, { status: "failed" });
+          onOptimisticActivityRollback?.(
+            conversation.id,
+            optimisticMsg.created_at,
+            previousPreview,
+          );
           return;
         }
 
@@ -547,9 +586,14 @@ export function MessageThread({
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(`Failed to send: ${reason}`);
         onUpdateMessage(tempId, { status: "failed" });
+        onOptimisticActivityRollback?.(
+          conversation.id,
+          optimisticMsg.created_at,
+          previousPreview,
+        );
       }
     },
-    [conversation, onNewMessage, onUpdateMessage]
+    [conversation, onNewMessage, onUpdateMessage, onOptimisticActivity, onOptimisticActivityRollback]
   );
 
   const handleSendMedia = useCallback(
@@ -576,8 +620,20 @@ export function MessageThread({
         created_at: new Date().toISOString(),
         reply_to_message_id: payload.replyToId,
       };
+      const previousPreview = {
+        last_message_text: conversation.last_message_text,
+        last_message_at: conversation.last_message_at,
+      };
       onNewMessage(optimisticMsg);
       setReplyTo(null);
+      // Mirrors the server's own last_message_text fallback
+      // (send-message.ts) so the optimistic preview doesn't visibly
+      // flip once the real confirmation lands.
+      onOptimisticActivity?.(
+        conversation.id,
+        contentText || `[${payload.kind}]`,
+        optimisticMsg.created_at,
+      );
 
       try {
         const res = await fetch("/api/whatsapp/send", {
@@ -600,6 +656,11 @@ export function MessageThread({
           console.error("Failed to send media:", reason);
           toast.error(`Failed to send: ${reason}`);
           onUpdateMessage(tempId, { status: "failed" });
+          onOptimisticActivityRollback?.(
+            conversation.id,
+            optimisticMsg.created_at,
+            previousPreview,
+          );
           // The upload never reached the recipient — GC the orphaned
           // object rather than leaving it in the public bucket forever.
           void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(() => {});
@@ -612,10 +673,15 @@ export function MessageThread({
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(`Failed to send: ${reason}`);
         onUpdateMessage(tempId, { status: "failed" });
+        onOptimisticActivityRollback?.(
+          conversation.id,
+          optimisticMsg.created_at,
+          previousPreview,
+        );
         void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(() => {});
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, onOptimisticActivity, onOptimisticActivityRollback],
   );
 
   const handleSendInteractive = useCallback(
@@ -636,7 +702,16 @@ export function MessageThread({
         created_at: new Date().toISOString(),
         reply_to_message_id: replyToId,
       };
+      const previousPreview = {
+        last_message_text: conversation.last_message_text,
+        last_message_at: conversation.last_message_at,
+      };
       onNewMessage(optimisticMsg);
+      onOptimisticActivity?.(
+        conversation.id,
+        payload.body || "[interactive]",
+        optimisticMsg.created_at,
+      );
 
       try {
         const res = await fetch("/api/whatsapp/send", {
@@ -657,6 +732,11 @@ export function MessageThread({
           console.error("Failed to send interactive message:", reason);
           toast.error(`Failed to send: ${reason}`);
           onUpdateMessage(tempId, { status: "failed" });
+          onOptimisticActivityRollback?.(
+            conversation.id,
+            optimisticMsg.created_at,
+            previousPreview,
+          );
           return;
         }
 
@@ -666,9 +746,14 @@ export function MessageThread({
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(`Failed to send: ${reason}`);
         onUpdateMessage(tempId, { status: "failed" });
+        onOptimisticActivityRollback?.(
+          conversation.id,
+          optimisticMsg.created_at,
+          previousPreview,
+        );
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, onOptimisticActivity, onOptimisticActivityRollback],
   );
 
   // Estado otimista com rollback: a UI reflete a mudança na hora
@@ -742,7 +827,16 @@ export function MessageThread({
         status: "sending",
         created_at: new Date().toISOString(),
       };
+      const previousPreview = {
+        last_message_text: conversation.last_message_text,
+        last_message_at: conversation.last_message_at,
+      };
       onNewMessage(optimisticMsg);
+      onOptimisticActivity?.(
+        conversation.id,
+        renderedBody || "[template]",
+        optimisticMsg.created_at,
+      );
 
       try {
         const res = await fetch("/api/whatsapp/send", {
@@ -774,6 +868,11 @@ export function MessageThread({
           console.error("Failed to send template:", reason);
           toast.error(`Failed to send template: ${reason}`);
           onUpdateMessage(tempId, { status: "failed" });
+          onOptimisticActivityRollback?.(
+            conversation.id,
+            optimisticMsg.created_at,
+            previousPreview,
+          );
           return;
         }
 
@@ -783,9 +882,14 @@ export function MessageThread({
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(`Failed to send template: ${reason}`);
         onUpdateMessage(tempId, { status: "failed" });
+        onOptimisticActivityRollback?.(
+          conversation.id,
+          optimisticMsg.created_at,
+          previousPreview,
+        );
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, onOptimisticActivity, onOptimisticActivityRollback],
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without

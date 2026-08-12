@@ -319,6 +319,11 @@ export interface WhatsAppConfig {
   uazapi_instance_name?: string;
   status: 'connected' | 'disconnected' | 'connecting' | 'hibernated';
   connected_at?: string;
+  /** Migration 051. Where a future automatic protocol/ticket would
+   *  route to — not yet wired to ticket creation (see 051's migration
+   *  header). Must be a queue in this same account, enforced by the
+   *  whatsapp_config_validate_default_queue_account trigger. */
+  default_queue_id?: string | null;
 }
 
 // Raw Meta status enum. We persist this verbatim from Meta (sync + webhook)
@@ -707,6 +712,10 @@ export interface Queue {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  /** Migration 051. Must be an active queue_members row for this queue
+   *  (and an active, agent/admin-role profile in this account) — enforced
+   *  by the queues_validate_primary_agent trigger, not just this type. */
+  primary_agent_id: string | null;
 }
 
 export type QueueMemberRole = 'agent' | 'supervisor';

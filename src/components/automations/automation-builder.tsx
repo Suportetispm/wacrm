@@ -664,7 +664,7 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
     setSaving(true)
     try {
       const payload = {
-        name: state.name || "Untitled automation",
+        name: state.name || t("untitled"),
         description: state.description || null,
         trigger_type: state.trigger_type,
         trigger_config: state.trigger_config,
@@ -688,13 +688,17 @@ export function AutomationBuilder({ initial }: { initial: BuilderInitial }) {
       if (!res.ok) {
         // If the server blocked activation with validation issues,
         // surface the first concrete problem so the user can fix it
-        // without opening DevTools for the full array.
-        const firstIssue: { path?: string; message?: string } | undefined =
-          body?.issues?.[0]
-        if (firstIssue?.message) {
-          toast.error(firstIssue.message, {
-            description: firstIssue.path ? `at ${firstIssue.path}` : undefined,
-          })
+        // without opening DevTools for the full array. The technical
+        // path/message are English and reference internal step
+        // indices — logged for debugging, never shown in the toast.
+        const firstIssue:
+          | { path?: string; message?: string; code?: string; params?: Record<string, string | number> }
+          | undefined = body?.issues?.[0]
+        if (firstIssue?.code) {
+          console.error("Automation validation failed:", firstIssue.path, firstIssue.message)
+          toast.error(t(`errors.${firstIssue.code}` as never, firstIssue.params as never))
+        } else if (firstIssue?.message) {
+          toast.error(firstIssue.message)
         } else {
           toast.error(body?.error ?? t("toasts.saveFailed"))
         }
@@ -802,6 +806,7 @@ function TriggerCard({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
           className="flex w-full items-center gap-3 px-4 py-3 text-left"
         >
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-500/10 text-blue-400">
@@ -1085,12 +1090,23 @@ function StepRenderer({
   const Icon = meta.icon
   const expanded = props.expandedId === step.cid
   const isCondition = step.step_type === "condition"
+  // send_buttons / send_list host the full InteractiveBuilder form
+  // (body/header/footer/buttons + live preview) — the standard 320px
+  // step width is nowhere near enough room for that once expanded
+  // (root cause of the "letter-by-letter" layout collapse: a fixed
+  // 280px preview column plus a body textarea were both trying to fit
+  // inside 320px total). Collapsed, it's still just an icon + one-line
+  // preview, so it stays at the standard compact width like every
+  // other step type.
+  const isInteractive = step.step_type === "send_buttons" || step.step_type === "send_list"
   // Card widths on mobile fill the full canvas column (max-w-2xl px-4
   // still keeps them reasonable). On sm+ the original fixed widths
   // come back so the flow visual stays recognisable.
   const width = isCondition
     ? "w-full max-w-[400px] sm:w-[400px]"
-    : "w-full max-w-[320px] sm:w-80"
+    : isInteractive && expanded
+      ? "w-full max-w-[560px] sm:w-[560px]"
+      : "w-full max-w-[320px] sm:w-80"
 
   return (
     <>
@@ -1104,6 +1120,7 @@ function StepRenderer({
           <button
             type="button"
             onClick={() => props.setExpandedId(expanded ? null : step.cid)}
+            aria-expanded={expanded}
             className="flex w-full items-center gap-3 px-4 py-3 text-left"
           >
             <GripVertical className="h-4 w-4 flex-shrink-0 text-muted-foreground" aria-hidden />
@@ -1112,10 +1129,14 @@ function StepRenderer({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                {isCondition ? "Condition" : step.step_type === "wait" ? "Wait" : "Action"}
+                {isCondition
+                  ? t("kindCondition")
+                  : step.step_type === "wait"
+                    ? t("kindWait")
+                    : t("kindAction")}
               </div>
               <div className="truncate text-sm font-medium text-foreground">{t(`steps.${meta.label}`)}</div>
-              <div className="truncate text-[11px] text-muted-foreground">{previewFor(step)}</div>
+              <div className="truncate text-[11px] text-muted-foreground">{previewFor(step, t)}</div>
             </div>
             <ChevronDown
               className={cn("h-4 w-4 text-muted-foreground transition-transform", expanded && "rotate-180")}
@@ -1133,7 +1154,7 @@ function StepRenderer({
                     variant="ghost"
                     size="icon"
                     disabled={index === 0}
-                    aria-label="Move up"
+                    aria-label={t("moveUp")}
                     onClick={() => props.moveStepAt(path, -1)}
                   >
                     <ArrowUp className="h-4 w-4" />
@@ -1142,7 +1163,7 @@ function StepRenderer({
                     variant="ghost"
                     size="icon"
                     disabled={index === total - 1}
-                    aria-label="Move down"
+                    aria-label={t("moveDown")}
                     onClick={() => props.moveStepAt(path, 1)}
                   >
                     <ArrowDown className="h-4 w-4" />
@@ -1451,7 +1472,7 @@ function StepEditor({
             />
           </FieldBlock>
           {(cfg.subject === "contact_field" || cfg.subject === "message_content") && (
-            <FieldBlock label="Value">
+            <FieldBlock label={t("config.valueLabel")}>
               <Input
                 value={(cfg.value as string) ?? ""}
                 onChange={(e) => set({ value: e.target.value })}
@@ -1506,21 +1527,29 @@ function FieldBlock({
   )
 }
 
-function previewFor(step: BuilderStep): string {
+function previewFor(step: BuilderStep, t: ReturnType<typeof useTranslations>): string {
   switch (step.step_type) {
     case "send_message":
-      return (step.step_config.text as string) || "no text yet"
+      return (step.step_config.text as string) || t("preview.noTextYet")
     case "send_buttons":
     case "send_list":
-      return interactivePayloadPreviewText(asInteractive(step.step_config)) || "no body yet"
+      return interactivePayloadPreviewText(asInteractive(step.step_config)) || t("preview.noBodyYet")
     case "send_template":
-      return (step.step_config.template_name as string) || "pick a template"
-    case "wait":
-      return `${step.step_config.amount ?? "?"} ${step.step_config.unit ?? ""}`
-    case "condition":
-      return `when ${step.step_config.subject ?? "?"}`
+      return (step.step_config.template_name as string) || t("preview.pickTemplate")
+    case "wait": {
+      const unit = step.step_config.unit as string | undefined
+      const unitLabel = unit && ["minutes", "hours", "days"].includes(unit) ? t(`config.units.${unit}`) : ""
+      return `${step.step_config.amount ?? "?"} ${unitLabel}`
+    }
+    case "condition": {
+      const subject = step.step_config.subject as string | undefined
+      const known = ["tag_presence", "contact_field", "message_content", "time_of_day"]
+      const subjectLabel =
+        subject && known.includes(subject) ? t(`config.subjects.${subject}`) : t("preview.unknownSubject")
+      return t("preview.whenSubject", { subject: subjectLabel })
+    }
     case "send_webhook":
-      return (step.step_config.url as string) || "no url"
+      return (step.step_config.url as string) || t("preview.noUrl")
     default:
       return ""
   }
@@ -1728,7 +1757,10 @@ export function fromServerSteps(nodes: ServerStepNode[]): BuilderStep[] {
   return nodes.map((n) => ({
     cid: cid(),
     step_type: n.step_type as AutomationStepType,
-    step_config: n.step_config ?? {},
+    step_config:
+      n.step_type === "send_buttons" || n.step_type === "send_list"
+        ? normalizeInteractiveConfig(n.step_config ?? {}, n.step_type === "send_list" ? "list" : "buttons")
+        : n.step_config ?? {},
     branches:
       n.step_type === "condition"
         ? {
@@ -1737,4 +1769,82 @@ export function fromServerSteps(nodes: ServerStepNode[]): BuilderStep[] {
           }
         : undefined,
   }))
+}
+
+/**
+ * Defensive coercion for a send_buttons/send_list step_config coming
+ * back from the server — insurance against any automation saved before
+ * this payload shape was enforced (missing ids, a null body, a
+ * mismatched `kind`, buttons/rows that aren't arrays). Never touches
+ * the DB: this only shapes what lands in the builder, once, on load,
+ * so the form and InteractiveBuilder's own validation always start
+ * from a well-formed payload instead of silently misbehaving on
+ * whatever shape an old row happens to have. `kind` is taken from the
+ * step's own `step_type` (the canonical source), not from the stored
+ * config, so a corrupted/legacy `kind` field can't leave the step
+ * looking like the wrong message type.
+ */
+function normalizeInteractiveConfig(
+  cfg: Record<string, unknown>,
+  kind: "buttons" | "list",
+): Record<string, unknown> {
+  const body = typeof cfg.body === "string" ? cfg.body : ""
+  const header = typeof cfg.header === "string" && cfg.header ? cfg.header : undefined
+  const footer = typeof cfg.footer === "string" && cfg.footer ? cfg.footer : undefined
+  const shared = { body, ...(header ? { header } : {}), ...(footer ? { footer } : {}) }
+
+  if (kind === "list") {
+    const fallback = blankListPayload()
+    const button_label =
+      typeof cfg.button_label === "string" && cfg.button_label.trim() ? cfg.button_label : fallback.button_label
+    const rawSections = Array.isArray(cfg.sections) ? cfg.sections : []
+    const sections = rawSections
+      .map((s, si) => {
+        if (!s || typeof s !== "object") return null
+        const section = s as Record<string, unknown>
+        const rawRows = Array.isArray(section.rows) ? section.rows : []
+        const seenIds = new Set<string>()
+        const rows = rawRows
+          .map((r, ri) => {
+            if (!r || typeof r !== "object") return null
+            const row = r as Record<string, unknown>
+            let id = typeof row.id === "string" && row.id.trim() ? row.id : `row_${si + 1}_${ri + 1}`
+            while (seenIds.has(id)) id = `${id}_${ri + 1}`
+            seenIds.add(id)
+            const title = typeof row.title === "string" ? row.title : ""
+            const description = typeof row.description === "string" ? row.description : undefined
+            return { id, title, ...(description ? { description } : {}) }
+          })
+          .filter((r): r is NonNullable<typeof r> => r !== null)
+        const title = typeof section.title === "string" ? section.title : undefined
+        return { ...(title ? { title } : {}), rows: rows.length > 0 ? rows : fallback.sections[0].rows }
+      })
+      .filter((s): s is NonNullable<typeof s> => s !== null)
+    return {
+      kind: "list",
+      ...shared,
+      button_label,
+      sections: sections.length > 0 ? sections : fallback.sections,
+    }
+  }
+
+  const fallback = blankButtonsPayload()
+  const rawButtons = Array.isArray(cfg.buttons) ? cfg.buttons : []
+  const seenIds = new Set<string>()
+  const buttons = rawButtons
+    .map((b, i) => {
+      if (!b || typeof b !== "object") return null
+      const btn = b as Record<string, unknown>
+      let id = typeof btn.id === "string" && btn.id.trim() ? btn.id : `btn_${i + 1}`
+      while (seenIds.has(id)) id = `${id}_${i + 1}`
+      seenIds.add(id)
+      const title = typeof btn.title === "string" ? btn.title : ""
+      return { id, title }
+    })
+    .filter((b): b is NonNullable<typeof b> => b !== null)
+  return {
+    kind: "buttons",
+    ...shared,
+    buttons: buttons.length > 0 ? buttons : fallback.buttons,
+  }
 }

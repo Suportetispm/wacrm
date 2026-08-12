@@ -83,6 +83,94 @@ export function reconcileLoadedConversations(
   );
 }
 
+/**
+ * Patches a single conversation's activity fields (preview text,
+ * timestamp, unread count) by id. Every other conversation passes
+ * through untouched. Pure — shared by the optimistic-send path and the
+ * realtime message/conversation handlers so both converge on the same
+ * field set instead of drifting.
+ */
+export function updateConversationPreview(
+  conversations: Conversation[],
+  conversationId: string,
+  patch: Partial<
+    Pick<Conversation, "last_message_text" | "last_message_at" | "unread_count">
+  >,
+): Conversation[] {
+  return conversations.map((c) =>
+    c.id === conversationId ? { ...c, ...patch } : c,
+  );
+}
+
+/**
+ * Moves the conversation matching `conversationId` to the front of the
+ * list, preserving the relative order of every other conversation.
+ * No-op (returns the same array reference) when the id isn't present or
+ * is already first — cheap enough to call defensively from every
+ * activity path (optimistic send, message INSERT, conversation UPDATE)
+ * without worrying about triggering spurious re-renders.
+ */
+export function moveConversationToTop(
+  conversations: Conversation[],
+  conversationId: string,
+): Conversation[] {
+  const idx = conversations.findIndex((c) => c.id === conversationId);
+  if (idx <= 0) return conversations;
+  const target = conversations[idx];
+  return [
+    target,
+    ...conversations.slice(0, idx),
+    ...conversations.slice(idx + 1),
+  ];
+}
+
+/**
+ * Sorts by most-recent activity (`last_message_at` descending), a
+ * conversation with no `last_message_at` (never messaged — e.g. just
+ * created via "Nova conversa") sorting last, not first.
+ *
+ * Applied as a render-time guarantee in ConversationList, on top of
+ * (not instead of) the incremental `moveConversationToTop` calls in
+ * the realtime handlers: those keep `conversations` state correctly
+ * ordered as activity happens, but the initial DB fetch
+ * (`ORDER BY last_message_at DESC`) inherits Postgres's default NULLS
+ * FIRST for DESC — a never-messaged conversation would otherwise sort
+ * ahead of every conversation with real (even old) activity on first
+ * load. Sorting again here, defensively, at the one place the list is
+ * actually rendered means the displayed order is always correct
+ * regardless of what produced `conversations` — the initial fetch,
+ * `moveConversationToTop`, or any future code path that touches it.
+ *
+ * `Array.prototype.sort` is a stable sort per spec (ES2019+), so two
+ * conversations with the exact same `last_message_at` keep whatever
+ * relative order they already had — never reshuffled arbitrarily.
+ */
+export function sortConversationsByRecentActivity(
+  conversations: Conversation[],
+): Conversation[] {
+  const timeOf = (c: Conversation) =>
+    c.last_message_at ? new Date(c.last_message_at).getTime() : -Infinity;
+  return [...conversations].sort((a, b) => timeOf(b) - timeOf(a));
+}
+
+/**
+ * Whether an optimistic-send rollback (reverting the preview fields
+ * `updateConversationPreview` set) is still safe to apply: only when the
+ * conversation's `last_message_at` still matches what the optimistic
+ * bump set it to. If it doesn't match, genuinely new activity (another
+ * outbound send, or an inbound message) landed for this conversation
+ * since the optimistic bump — the rollback must be skipped so it
+ * doesn't clobber that real data with stale pre-send values.
+ */
+export function shouldRollbackConversationPreview(
+  conversations: Conversation[],
+  conversationId: string,
+  optimisticAt: string,
+): boolean {
+  const current = conversations.find((c) => c.id === conversationId);
+  return !!current && current.last_message_at === optimisticAt;
+}
+
 export interface ContactFilters {
   /** Tag ids; a conversation matches if its contact has ANY of them (OR). */
   tagIds: string[];

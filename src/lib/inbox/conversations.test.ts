@@ -3,8 +3,12 @@ import {
   countConversationsByStatus,
   matchesContactFilters,
   matchesInboxFilters,
+  moveConversationToTop,
   normalizeConversation,
   reconcileLoadedConversations,
+  shouldRollbackConversationPreview,
+  sortConversationsByRecentActivity,
+  updateConversationPreview,
 } from "./conversations";
 import type { Conversation, ConversationStatus } from "@/types";
 
@@ -334,5 +338,350 @@ describe("countConversationsByStatus", () => {
       closed: 0,
       finalized: 0,
     });
+  });
+});
+
+describe("updateConversationPreview", () => {
+  it("patches only the matching conversation's preview fields", () => {
+    const list = [
+      fullConv({ id: "a", last_message_text: "old a", last_message_at: "t0" }),
+      fullConv({ id: "b", last_message_text: "old b", last_message_at: "t0" }),
+    ];
+
+    const result = updateConversationPreview(list, "a", {
+      last_message_text: "new a",
+      last_message_at: "t1",
+    });
+
+    expect(result.find((c) => c.id === "a")).toMatchObject({
+      last_message_text: "new a",
+      last_message_at: "t1",
+    });
+    // The other conversation is untouched — same reference even.
+    expect(result.find((c) => c.id === "b")).toBe(list[1]);
+  });
+
+  it("updates the timestamp so a stale-looking conversation reflects the new activity", () => {
+    const list = [fullConv({ id: "a", last_message_at: "2020-01-01T00:00:00.000Z" })];
+    const now = "2026-08-12T12:00:00.000Z";
+
+    const result = updateConversationPreview(list, "a", { last_message_at: now });
+
+    expect(result[0].last_message_at).toBe(now);
+  });
+
+  it("is a no-op (in content) when the id doesn't match anything", () => {
+    const list = [fullConv({ id: "a" })];
+    const result = updateConversationPreview(list, "missing", {
+      last_message_text: "x",
+    });
+    expect(result).toEqual(list);
+  });
+
+  it("does not mutate the input array", () => {
+    const list = [fullConv({ id: "a", last_message_text: "old" })];
+    updateConversationPreview(list, "a", { last_message_text: "new" });
+    expect(list[0].last_message_text).toBe("old");
+  });
+});
+
+describe("moveConversationToTop", () => {
+  it("moves a conversation from the middle to the front, preserving the relative order of the rest", () => {
+    const list = [fullConv({ id: "a" }), fullConv({ id: "b" }), fullConv({ id: "c" })];
+
+    const result = moveConversationToTop(list, "b");
+
+    expect(result.map((c) => c.id)).toEqual(["b", "a", "c"]);
+  });
+
+  it("moves the last conversation to the front", () => {
+    const list = [fullConv({ id: "a" }), fullConv({ id: "b" }), fullConv({ id: "c" })];
+
+    const result = moveConversationToTop(list, "c");
+
+    expect(result.map((c) => c.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("is a no-op when the conversation is already first", () => {
+    const list = [fullConv({ id: "a" }), fullConv({ id: "b" })];
+
+    const result = moveConversationToTop(list, "a");
+
+    expect(result).toBe(list);
+  });
+
+  it("is a no-op when the id doesn't match anything", () => {
+    const list = [fullConv({ id: "a" }), fullConv({ id: "b" })];
+
+    const result = moveConversationToTop(list, "missing");
+
+    expect(result).toBe(list);
+  });
+
+  it("never duplicates or drops conversations", () => {
+    const list = [fullConv({ id: "a" }), fullConv({ id: "b" }), fullConv({ id: "c" })];
+
+    const result = moveConversationToTop(list, "b");
+
+    expect(result).toHaveLength(3);
+    expect(new Set(result.map((c) => c.id))).toEqual(new Set(["a", "b", "c"]));
+  });
+});
+
+describe("optimistic activity bump (updateConversationPreview + moveConversationToTop composed)", () => {
+  // This mirrors exactly what page.tsx's handleConversationActivity,
+  // handleMessageEvent, and handleConversationEvent do: patch the
+  // conversation's preview, then move it to the front.
+  function bump(
+    list: Conversation[],
+    id: string,
+    patch: Parameters<typeof updateConversationPreview>[2],
+  ) {
+    return moveConversationToTop(updateConversationPreview(list, id, patch), id);
+  }
+
+  it("a new message in the oldest conversation brings it to the top", () => {
+    const list = [
+      fullConv({ id: "newest", last_message_at: "2026-08-12T10:00:00.000Z" }),
+      fullConv({ id: "middle", last_message_at: "2026-08-12T09:00:00.000Z" }),
+      fullConv({ id: "oldest", last_message_at: "2020-01-01T00:00:00.000Z" }),
+    ];
+
+    const result = bump(list, "oldest", {
+      last_message_text: "hey!",
+      last_message_at: "2026-08-12T11:00:00.000Z",
+    });
+
+    expect(result.map((c) => c.id)).toEqual(["oldest", "newest", "middle"]);
+    expect(result[0].last_message_text).toBe("hey!");
+  });
+
+  it("an outbound optimistic send bumps the conversation the same way an inbound message would", () => {
+    const list = [
+      fullConv({ id: "other", last_message_at: "2026-08-12T10:00:00.000Z" }),
+      fullConv({ id: "active", last_message_at: "2026-08-12T09:00:00.000Z" }),
+    ];
+
+    const result = bump(list, "active", {
+      last_message_text: "Sure, sending it now",
+      last_message_at: "2026-08-12T11:00:00.000Z",
+    });
+
+    expect(result.map((c) => c.id)).toEqual(["active", "other"]);
+  });
+
+  it("does not duplicate the conversation when it's bumped repeatedly", () => {
+    let list = [fullConv({ id: "a" }), fullConv({ id: "b" })];
+
+    list = bump(list, "b", { last_message_text: "1" });
+    list = bump(list, "b", { last_message_text: "2" });
+
+    expect(list).toHaveLength(2);
+    expect(list.map((c) => c.id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("shouldRollbackConversationPreview", () => {
+  it("allows the rollback when nothing newer has landed since the optimistic bump", () => {
+    const list = [fullConv({ id: "a", last_message_at: "optimistic-ts" })];
+    expect(
+      shouldRollbackConversationPreview(list, "a", "optimistic-ts"),
+    ).toBe(true);
+  });
+
+  it("blocks the rollback when a genuinely newer message already landed for the conversation", () => {
+    // Simulates: optimistic send at t1 fails, but a real message (inbound
+    // or another outbound send) already bumped last_message_at to t2
+    // before the failure/rollback callback ran.
+    const list = [fullConv({ id: "a", last_message_at: "t2-real-message" })];
+    expect(
+      shouldRollbackConversationPreview(list, "a", "t1-optimistic"),
+    ).toBe(false);
+  });
+
+  it("blocks the rollback when the conversation id can't be found", () => {
+    const list = [fullConv({ id: "a", last_message_at: "t1" })];
+    expect(
+      shouldRollbackConversationPreview(list, "missing", "t1"),
+    ).toBe(false);
+  });
+});
+
+describe("rollback after a failed optimistic send", () => {
+  function bump(
+    list: Conversation[],
+    id: string,
+    patch: Parameters<typeof updateConversationPreview>[2],
+  ) {
+    return moveConversationToTop(updateConversationPreview(list, id, patch), id);
+  }
+
+  it("restores the previous preview without duplicating or dropping conversations", () => {
+    const original = [
+      fullConv({ id: "a", last_message_text: "last real message", last_message_at: "t0" }),
+      fullConv({ id: "b", last_message_text: "b's message", last_message_at: "t-1" }),
+    ];
+
+    // Optimistic send: bump "a" to the top with the (about to fail) draft.
+    const optimistic = bump(original, "a", {
+      last_message_text: "this send will fail",
+      last_message_at: "t1-optimistic",
+    });
+    expect(optimistic.map((c) => c.id)).toEqual(["a", "b"]);
+
+    // Failure callback fires: nothing newer landed, so the rollback applies.
+    const canRollback = shouldRollbackConversationPreview(
+      optimistic,
+      "a",
+      "t1-optimistic",
+    );
+    expect(canRollback).toBe(true);
+
+    const rolledBack = canRollback
+      ? updateConversationPreview(optimistic, "a", {
+          last_message_text: "last real message",
+          last_message_at: "t0",
+        })
+      : optimistic;
+
+    expect(rolledBack).toHaveLength(2);
+    expect(rolledBack.find((c) => c.id === "a")).toMatchObject({
+      last_message_text: "last real message",
+      last_message_at: "t0",
+    });
+    // The failed draft text is gone — no misleading "sent" preview left behind.
+    expect(
+      rolledBack.some((c) => c.last_message_text === "this send will fail"),
+    ).toBe(false);
+  });
+
+  it("skips the rollback instead of clobbering a genuinely newer message that arrived in between", () => {
+    const original = [fullConv({ id: "a", last_message_text: "old", last_message_at: "t0" })];
+
+    const optimistic = bump(original, "a", {
+      last_message_text: "this send will fail",
+      last_message_at: "t1-optimistic",
+    });
+
+    // A real message (e.g. the customer replying) lands before the
+    // failure callback runs, bumping last_message_at past t1-optimistic.
+    const withRealMessage = bump(optimistic, "a", {
+      last_message_text: "actual customer reply",
+      last_message_at: "t2-real",
+    });
+
+    const canRollback = shouldRollbackConversationPreview(
+      withRealMessage,
+      "a",
+      "t1-optimistic",
+    );
+    expect(canRollback).toBe(false);
+
+    // The real message's preview must survive untouched.
+    expect(withRealMessage[0].last_message_text).toBe("actual customer reply");
+  });
+});
+
+describe("sortConversationsByRecentActivity", () => {
+  it("orders strictly newest-first, never oldest-first", () => {
+    const list = [
+      fullConv({ id: "old", last_message_at: "2020-01-01T00:00:00.000Z" }),
+      fullConv({ id: "newest", last_message_at: "2026-08-12T12:00:00.000Z" }),
+      fullConv({ id: "middle", last_message_at: "2026-08-12T09:00:00.000Z" }),
+    ];
+
+    const result = sortConversationsByRecentActivity(list);
+
+    expect(result.map((c) => c.id)).toEqual(["newest", "middle", "old"]);
+  });
+
+  it("the exact scenario from the bug report: [old A, old B, new C], activity on B moves it to the top", () => {
+    const original = [
+      fullConv({ id: "A", last_message_at: "2026-08-10T08:00:00.000Z" }), // oldest
+      fullConv({ id: "B", last_message_at: "2026-08-11T08:00:00.000Z" }), // middle
+      fullConv({ id: "C", last_message_at: "2026-08-12T08:00:00.000Z" }), // newest of the three, initially
+    ];
+    expect(sortConversationsByRecentActivity(original).map((c) => c.id)).toEqual([
+      "C",
+      "B",
+      "A",
+    ]);
+
+    // Activity lands on B — this mirrors exactly what page.tsx's
+    // handleMessageEvent does: patch the preview, then bump position.
+    // The bump alone is enough for the incremental array to already be
+    // correct; sortConversationsByRecentActivity is what the render
+    // layer actually uses, and must land on the identical order.
+    const bumped = moveConversationToTop(
+      updateConversationPreview(original, "B", {
+        last_message_at: "2026-08-12T12:00:00.000Z", // newer than C now
+      }),
+      "B",
+    );
+
+    const rendered = sortConversationsByRecentActivity(bumped);
+
+    // B is the most recent activity now -> position 0. C (still
+    // 2026-08-12T08:00) is next, A (oldest, untouched) stays last.
+    // Never oldest-first, never A or C ahead of the conversation that
+    // just had real activity.
+    expect(rendered.map((c) => c.id)).toEqual(["B", "C", "A"]);
+  });
+
+  it("a conversation with no last_message_at (never messaged) sorts LAST, not first", () => {
+    const list = [
+      fullConv({ id: "never-messaged", last_message_at: undefined }),
+      fullConv({ id: "has-old-activity", last_message_at: "2020-01-01T00:00:00.000Z" }),
+    ];
+
+    const result = sortConversationsByRecentActivity(list);
+
+    // Postgres's default NULLS FIRST for `ORDER BY ... DESC` would put
+    // "never-messaged" ahead of a conversation with real (even old)
+    // activity — this function deliberately overrides that: no
+    // activity at all is the least recent, not the most.
+    expect(result.map((c) => c.id)).toEqual(["has-old-activity", "never-messaged"]);
+  });
+
+  it("is a stable sort — ties keep their original relative order", () => {
+    const sameTimestamp = "2026-08-12T10:00:00.000Z";
+    const list = [
+      fullConv({ id: "first", last_message_at: sameTimestamp }),
+      fullConv({ id: "second", last_message_at: sameTimestamp }),
+      fullConv({ id: "third", last_message_at: sameTimestamp }),
+    ];
+
+    const result = sortConversationsByRecentActivity(list);
+
+    expect(result.map((c) => c.id)).toEqual(["first", "second", "third"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const list = [
+      fullConv({ id: "a", last_message_at: "2020-01-01T00:00:00.000Z" }),
+      fullConv({ id: "b", last_message_at: "2026-01-01T00:00:00.000Z" }),
+    ];
+    const original = [...list];
+
+    sortConversationsByRecentActivity(list);
+
+    expect(list).toEqual(original);
+  });
+
+  it("never leaves the list in reverse (oldest-first) order", () => {
+    const list = [
+      fullConv({ id: "a", last_message_at: "2026-08-01T00:00:00.000Z" }),
+      fullConv({ id: "b", last_message_at: "2026-08-05T00:00:00.000Z" }),
+      fullConv({ id: "c", last_message_at: "2026-08-10T00:00:00.000Z" }),
+    ];
+
+    const result = sortConversationsByRecentActivity(list);
+    const timestamps = result.map((c) => new Date(c.last_message_at!).getTime());
+
+    // Each timestamp must be >= the next one — monotonically
+    // non-increasing, i.e. never ascending/oldest-first anywhere.
+    for (let i = 0; i < timestamps.length - 1; i++) {
+      expect(timestamps[i]).toBeGreaterThanOrEqual(timestamps[i + 1]);
+    }
   });
 });

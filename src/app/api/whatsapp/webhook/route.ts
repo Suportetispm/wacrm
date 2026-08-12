@@ -706,16 +706,23 @@ async function processMessage(
     return
   }
 
-  // Update conversation
-  const { error: convError } = await supabaseAdmin()
-    .from('conversations')
-    .update({
-      last_message_text: contentText || `[${message.type}]`,
-      last_message_at: new Date().toISOString(),
-      unread_count: (conversation.unread_count || 0) + 1,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', conversation.id)
+  // Update conversation — via the atomic RPC (migration 050) instead of
+  // a plain .update(), so the "does this conversation already have a
+  // ticket?" check and the status write happen in the same statement.
+  // A separate SELECT-then-UPDATE here would leave a race window where
+  // an admin's /api/tickets/open could create a ticket in between,
+  // forcing status='pending' after a ticket already claimed it.
+  // unread_count is incremented inside the function, not read from the
+  // `conversation` object fetched earlier in this handler — avoids
+  // acting on a value that may already be stale by the time we get here.
+  const { error: convError } = await supabaseAdmin().rpc(
+    'meta_reopen_conversation_on_inbound',
+    {
+      p_conversation_id: conversation.id,
+      p_last_message_text: contentText || `[${message.type}]`,
+      p_last_message_at: new Date().toISOString(),
+    },
+  )
 
   if (convError) {
     console.error('Error updating conversation:', convError)

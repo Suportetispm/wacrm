@@ -44,27 +44,40 @@ function patchRequest(body: unknown) {
   })
 }
 
-/** ctx.supabase.from() distinguishes the two pre-check lookups this
- *  route can make: the queue's own current archived_at (for the
- *  activate guard) and a transfer target queue (for
- *  chatbot_failure_queue_id tenancy). */
-function ctxWith(opts: { archivedAt?: string | null; transferTargetFound?: boolean }) {
+/** ctx.supabase.from() distinguishes the pre-check lookups this route
+ *  can make: the queue's own current archived_at (for the activate
+ *  guard), a transfer target queue (for chatbot_failure_queue_id
+ *  tenancy), and (051) an active queue_members lookup for
+ *  primary_agent_id. `.eq()` is self-referential so any number of
+ *  chained calls before the terminal `.maybeSingle()` resolves the
+ *  same way, regardless of how many `.eq()` filters a given query uses. */
+function ctxWith(opts: {
+  archivedAt?: string | null
+  transferTargetFound?: boolean
+  primaryAgentIsActiveMember?: boolean
+}) {
   return {
     accountId: 'acct-1',
     supabase: {
-      from: () => ({
-        select: (cols: string) => ({
-          eq: () => ({
-            eq: () => ({
-              maybeSingle: async () => {
-                if (cols === 'archived_at') {
-                  return { data: { archived_at: opts.archivedAt ?? null }, error: null }
+      from: (table: string) => ({
+        select: (cols: string) => {
+          const builder = {
+            eq: () => builder,
+            maybeSingle: async () => {
+              if (table === 'queue_members') {
+                return {
+                  data: opts.primaryAgentIsActiveMember ? { id: 'qm-1' } : null,
+                  error: null,
                 }
-                return { data: opts.transferTargetFound ? { id: 'queue-2' } : null, error: null }
-              },
-            }),
-          }),
-        }),
+              }
+              if (cols === 'archived_at') {
+                return { data: { archived_at: opts.archivedAt ?? null }, error: null }
+              }
+              return { data: opts.transferTargetFound ? { id: 'queue-2' } : null, error: null }
+            },
+          }
+          return builder
+        },
       }),
     },
   }
@@ -160,5 +173,35 @@ describe('PATCH /api/queues/[id] — chatbot_failure_queue_id', () => {
     expect(mocks.adminUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ chatbot_failure_action: 'transfer_queue', chatbot_failure_queue_id: 'queue-2' }),
     )
+  })
+})
+
+describe('PATCH /api/queues/[id] — primary_agent_id (051)', () => {
+  it('clears primary_agent_id when null, without any pre-check lookup', async () => {
+    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    const res = await PATCH(patchRequest({ primary_agent_id: null }), params)
+    expect(res.status).toBe(200)
+    expect(mocks.adminUpdate).toHaveBeenCalledWith({ primary_agent_id: null })
+  })
+
+  it('accepts an active member of this queue', async () => {
+    mocks.requireRole.mockResolvedValue(ctxWith({ primaryAgentIsActiveMember: true }))
+    const res = await PATCH(patchRequest({ primary_agent_id: 'user-1' }), params)
+    expect(res.status).toBe(200)
+    expect(mocks.adminUpdate).toHaveBeenCalledWith({ primary_agent_id: 'user-1' })
+  })
+
+  it('rejects a user who is not an active member of this queue, before ever updating', async () => {
+    mocks.requireRole.mockResolvedValue(ctxWith({ primaryAgentIsActiveMember: false }))
+    const res = await PATCH(patchRequest({ primary_agent_id: 'user-1' }), params)
+    expect(res.status).toBe(400)
+    expect(mocks.adminUpdate).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-string, non-null primary_agent_id', async () => {
+    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    const res = await PATCH(patchRequest({ primary_agent_id: 42 }), params)
+    expect(res.status).toBe(400)
+    expect(mocks.adminUpdate).not.toHaveBeenCalled()
   })
 })

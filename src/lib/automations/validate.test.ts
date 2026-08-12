@@ -7,12 +7,20 @@ import {
 describe("validateStepsForActivation", () => {
   it("rejects empty or missing step lists", () => {
     expect(validateStepsForActivation([])).toEqual([
-      { path: "steps", message: "active automations need at least one step" },
+      {
+        path: "steps",
+        message: "active automations need at least one step",
+        code: "no_steps",
+      },
     ]);
     expect(
       validateStepsForActivation(undefined as unknown as never[]),
     ).toEqual([
-      { path: "steps", message: "active automations need at least one step" },
+      {
+        path: "steps",
+        message: "active automations need at least one step",
+        code: "no_steps",
+      },
     ]);
   });
 
@@ -149,6 +157,32 @@ describe("validateStepsForActivation", () => {
       },
     ]);
     expect(tooMany.map((i) => i.path)).toEqual(["steps[0].interactive"]);
+    expect(tooMany[0].code).toBe("interactive_too_many_buttons");
+    expect(tooMany[0].params).toMatchObject({ limit: 3, step: 1 });
+  });
+
+  it("propagates a stable, translatable code+params for an empty interactive body", () => {
+    // This is the exact shape of the reported bug: a send_buttons step
+    // with no body text fails activation with "Interactive message body
+    // text is required." at steps[2].interactive. `code`/`params` are
+    // what let the UI show a friendly, localized message instead of
+    // that raw English string + technical path.
+    const issues = validateStepsForActivation([
+      { step_type: "send_message", step_config: { text: "hi" } },
+      { step_type: "send_message", step_config: { text: "hi" } },
+      {
+        step_type: "send_buttons",
+        step_config: { kind: "buttons", body: "", buttons: [{ id: "yes", title: "Yes" }] },
+      },
+    ]);
+    expect(issues).toEqual([
+      {
+        path: "steps[2].interactive",
+        message: "Interactive message body text is required.",
+        code: "interactive_body_required",
+        params: { step: 3 },
+      },
+    ]);
   });
 
   it("flags update_contact_field when field or value is missing", () => {
@@ -192,7 +226,12 @@ describe("validateStepsForActivation", () => {
       { step_type: "do_a_barrel_roll", step_config: {} },
     ]);
     expect(issues).toEqual([
-      { path: "steps[0]", message: "unknown step type: do_a_barrel_roll" },
+      {
+        path: "steps[0]",
+        message: "unknown step type: do_a_barrel_roll",
+        code: "unknown_step_type",
+        params: { step: 1 },
+      },
     ]);
   });
 
@@ -251,7 +290,11 @@ describe("validateTriggerForActivation", () => {
 
   it("requires schedule on time_based triggers", () => {
     expect(validateTriggerForActivation("time_based", {})).toEqual([
-      { path: "trigger.schedule", message: "schedule is required" },
+      {
+        path: "trigger.schedule",
+        message: "schedule is required",
+        code: "trigger_schedule_required",
+      },
     ]);
     expect(
       validateTriggerForActivation("time_based", { schedule: "0 9 * * *" }),
@@ -260,7 +303,11 @@ describe("validateTriggerForActivation", () => {
 
   it("requires tag_id on tag_added triggers", () => {
     expect(validateTriggerForActivation("tag_added", {})).toEqual([
-      { path: "trigger.tag_id", message: "tag is required" },
+      {
+        path: "trigger.tag_id",
+        message: "tag is required",
+        code: "trigger_tag_required",
+      },
     ]);
     expect(
       validateTriggerForActivation("tag_added", { tag_id: "tag-uuid" }),
@@ -269,7 +316,11 @@ describe("validateTriggerForActivation", () => {
 
   it("requires reply_ids on interactive_reply triggers", () => {
     expect(validateTriggerForActivation("interactive_reply", {})).toEqual([
-      { path: "trigger.reply_ids", message: "at least one reply id is required" },
+      {
+        path: "trigger.reply_ids",
+        message: "at least one reply id is required",
+        code: "trigger_reply_ids_required",
+      },
     ]);
     expect(
       validateTriggerForActivation("interactive_reply", { reply_ids: ["yes", "no"] }),

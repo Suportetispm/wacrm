@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import {
   registerPhoneNumber,
   subscribeWabaToApp,
@@ -429,6 +430,78 @@ export async function POST(request: Request) {
     console.error('Error in WhatsApp config POST:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
+}
+
+/**
+ * PATCH /api/whatsapp/config
+ *
+ * Narrow endpoint (051) for setting/clearing this connection's
+ * default queue — where a future automatic protocol/ticket would
+ * route to (not implemented yet; see 051's migration header).
+ * Deliberately separate from POST: POST re-verifies Meta credentials
+ * and re-runs webhook registration on every save, which is wrong (and
+ * provider-specific — a UAZAPI-connected account never touches those
+ * fields at all) for a change that's only "which queue this
+ * connection routes to." admin-gated via `requireRole` (unlike POST,
+ * which relies on `whatsapp_config_update`'s RLS policy already
+ * requiring admin — this route surfaces that as a clean 403 instead
+ * of a silent RLS no-op).
+ */
+export async function PATCH(request: Request) {
+  let ctx
+  try {
+    ctx = await requireRole('admin')
+  } catch (err) {
+    return toErrorResponse(err)
+  }
+
+  const body = await request.json().catch(() => null)
+  if (!body || !('default_queue_id' in body)) {
+    return NextResponse.json({ error: 'default_queue_id is required' }, { status: 400 })
+  }
+
+  let defaultQueueId: string | null
+  if (body.default_queue_id === null) {
+    defaultQueueId = null
+  } else if (typeof body.default_queue_id === 'string' && body.default_queue_id) {
+    // Clean 400 instead of the DB trigger's raw exception text —
+    // confirm the target is a real queue in THIS account before
+    // attempting the update. The trigger
+    // (whatsapp_config_validate_default_queue_account, migration 051)
+    // is still the authoritative check.
+    const { data: queue } = await ctx.supabase
+      .from('queues')
+      .select('id')
+      .eq('id', body.default_queue_id)
+      .eq('account_id', ctx.accountId)
+      .maybeSingle()
+    if (!queue) {
+      return NextResponse.json(
+        { error: 'default_queue_id must reference a queue in this account' },
+        { status: 400 },
+      )
+    }
+    defaultQueueId = body.default_queue_id
+  } else {
+    return NextResponse.json({ error: 'default_queue_id must be a string or null' }, { status: 400 })
+  }
+
+  const { data, error } = await ctx.supabase
+    .from('whatsapp_config')
+    .update({ default_queue_id: defaultQueueId })
+    .eq('account_id', ctx.accountId)
+    .select('id, default_queue_id')
+    .maybeSingle()
+
+  if (error) {
+    console.error('Error updating whatsapp_config.default_queue_id:', error)
+    return NextResponse.json({ error: 'Failed to update configuration' }, { status: 500 })
+  }
+  if (!data) {
+    return NextResponse.json({ error: 'No WhatsApp configuration saved yet' }, { status: 404 })
+  }
+
+  return NextResponse.json({ default_queue_id: data.default_queue_id })
 }
 
 /**

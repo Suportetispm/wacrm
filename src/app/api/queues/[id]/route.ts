@@ -169,6 +169,38 @@ export async function PATCH(
       }
       update.default_priority = body.default_priority
     }
+
+    // primary_agent_id (051): null clears it (always allowed — mirrors
+    // how the DB trigger treats NULL as a no-op). A non-null value gets
+    // the same "clean 400 instead of the trigger's raw exception text"
+    // treatment as chatbot_failure_queue_id above — confirm the target
+    // is an ACTIVE member of THIS queue before attempting the update.
+    // The DB trigger (queues_validate_primary_agent, 051) is still the
+    // authoritative check — it additionally covers profile/account
+    // active state and role, which this route does not duplicate.
+    if ('primary_agent_id' in body) {
+      if (body.primary_agent_id === null) {
+        update.primary_agent_id = null
+      } else if (typeof body.primary_agent_id === 'string' && body.primary_agent_id) {
+        const { data: member } = await ctx.supabase
+          .from('queue_members')
+          .select('id')
+          .eq('queue_id', id)
+          .eq('user_id', body.primary_agent_id)
+          .eq('account_id', ctx.accountId)
+          .eq('is_active', true)
+          .maybeSingle()
+        if (!member) {
+          return NextResponse.json(
+            { error: 'primary_agent_id must be an active member of this queue' },
+            { status: 400 },
+          )
+        }
+        update.primary_agent_id = body.primary_agent_id
+      } else {
+        return NextResponse.json({ error: 'primary_agent_id must be a string or null' }, { status: 400 })
+      }
+    }
   }
 
   if (Object.keys(update).length === 0) {
