@@ -11,11 +11,18 @@
  * UAZAPI inside the event body; reading it here would be one step
  * from accidentally logging it).
  *
+ * Phone resolution is delegated to `resolveCanonicalPhone`
+ * (`uazapi-webhook-identity.ts`), shared with the image/document
+ * parsers, so all three agree on the same LID-vs-phone classification
+ * and the same field priority.
+ *
  * Scope for this stage: text only, individual chats only, inbound
  * only. Returns `null` for anything else — images/audio/video/
  * documents/locations, groups, `fromMe`, and API-echoed sends are all
  * unsupported here and must fall through untouched.
  */
+
+import { resolveCanonicalPhone } from './uazapi-webhook-identity'
 
 export interface ParsedInboundTextMessage {
   /** UAZAPI's own id for this message — the future DB `messages.message_id`. */
@@ -47,36 +54,22 @@ function firstNonEmptyString(values: unknown[]): string | null {
   return null
 }
 
-/** Strips a WhatsApp JID suffix (`@s.whatsapp.net`, `@g.us`, ...), keeping only what's before `@`. */
-function stripJidSuffix(value: string): string {
-  const at = value.indexOf('@')
-  return at >= 0 ? value.slice(0, at) : value
-}
-
-/** Digits-only, JID-stripped, length-sane phone — or null if nothing usable. */
-function normalizeCandidatePhone(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null
-  const digits = stripJidSuffix(raw).replace(/\D/g, '')
-  if (digits.length < 7 || digits.length > 15) return null
-  return digits
-}
-
+/**
+ * Same field priority as before (sender_pn > sender > chat.phone >
+ * chatid > chat.wa_chatid), but the LID-vs-phone classification now
+ * lives in the shared helper instead of a local strip-then-check.
+ */
 function extractPhone(
   message: Record<string, unknown>,
   chat: Record<string, unknown> | undefined,
 ): string | null {
-  const candidates = [
+  return resolveCanonicalPhone([
     message.sender_pn,
     message.sender,
     chat?.phone,
     message.chatid,
     chat?.wa_chatid,
-  ]
-  for (const candidate of candidates) {
-    const phone = normalizeCandidatePhone(candidate)
-    if (phone) return phone
-  }
-  return null
+  ]).phone
 }
 
 function extractName(

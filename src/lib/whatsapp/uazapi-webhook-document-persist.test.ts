@@ -486,3 +486,33 @@ describe('persistInboundDocumentMessage — metadata hygiene', () => {
     }
   })
 })
+
+describe('persistInboundDocumentMessage — LID never becomes a phone', () => {
+  it('fails safely (contact_failed) instead of fabricating a contact when only an @lid sender/chatId is present', async () => {
+    const db = createFakeDb()
+    const parsed = baseParsed({
+      sender: '208756952567854@lid',
+      chatId: '208756952567854@lid',
+      senderPn: undefined,
+      chatPhone: undefined,
+      chatWaChatid: undefined,
+    })
+
+    const result = await persistInboundDocumentMessage({ db, ...ARGS_BASE, parsed })
+
+    expect(result).toEqual({ outcome: 'error', code: 'contact_failed' })
+    expect(downloadMock).not.toHaveBeenCalled()
+    expect(db.__mocks.upload).not.toHaveBeenCalled()
+    expect(db.__mocks.rpc).not.toHaveBeenCalled()
+  })
+
+  it('resolves via senderPn when sender is an @lid JID', async () => {
+    downloadMock.mockResolvedValue({ base64Data: VALID_PDF_BASE64 })
+    const db = createFakeDb({ ...freshEntityQueues(), messagesQueue: [{ data: null, error: null }] })
+    const parsed = baseParsed({ sender: '208756952567854@lid', senderPn: '5591999999999' })
+
+    const result = await persistInboundDocumentMessage({ db, ...ARGS_BASE, parsed })
+
+    expect(result).toEqual({ outcome: 'persisted' })
+  })
+})

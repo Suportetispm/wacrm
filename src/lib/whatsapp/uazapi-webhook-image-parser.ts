@@ -35,6 +35,12 @@
  * types, documents/audio/video, groups, `fromMe`, API-echoed sends,
  * and view-once media are all unsupported here and must fall through
  * untouched.
+ *
+ * `senderPn`/`chatPhone`/`chatWaChatid` are captured (when present)
+ * purely so the persist layer can resolve the canonical phone with
+ * the exact same field priority and LID classification as the text
+ * path (`uazapi-webhook-identity.ts`) — this parser itself does no
+ * phone resolution.
  */
 
 import { UAZAPI_MEDIA_DOWNLOAD_MAX_DECODED_BYTES } from './uazapi-api'
@@ -56,6 +62,12 @@ export interface ParsedInboundImageMessage {
   providerDownloadId: string
   chatId: string
   sender: string
+  /** `message.sender_pn` — the phone-shaped field UAZAPI provides for the sender, when present. Highest-priority phone candidate for the shared identity resolver. */
+  senderPn?: string
+  /** `chat.phone` — chat-level phone hint, when present. */
+  chatPhone?: string
+  /** `chat.wa_chatid` — chat-level JID fallback, when present. */
+  chatWaChatid?: string
   senderName?: string
   /** ISO 8601 — the message's own timestamp when trustworthy, else a controlled "now" fallback. */
   occurredAt: string
@@ -167,6 +179,17 @@ export function parseInboundImageMessage(payload: unknown): ParsedInboundImageMe
   const sender = message.sender
   if (typeof sender !== 'string' || sender.trim().length === 0) return null
 
+  const senderPn =
+    typeof message.sender_pn === 'string' && message.sender_pn.trim().length > 0
+      ? message.sender_pn.trim()
+      : undefined
+  const chatPhone =
+    typeof chat?.phone === 'string' && chat.phone.trim().length > 0 ? chat.phone.trim() : undefined
+  const chatWaChatid =
+    typeof chat?.wa_chatid === 'string' && chat.wa_chatid.trim().length > 0
+      ? chat.wa_chatid.trim()
+      : undefined
+
   const senderName =
     typeof message.senderName === 'string' && message.senderName.trim().length > 0
       ? message.senderName.trim()
@@ -183,6 +206,9 @@ export function parseInboundImageMessage(payload: unknown): ParsedInboundImageMe
     providerDownloadId,
     chatId,
     sender,
+    senderPn,
+    chatPhone,
+    chatWaChatid,
     senderName,
     occurredAt,
     mimeType,

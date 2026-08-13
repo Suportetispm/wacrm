@@ -8,6 +8,7 @@ import { parseInboundImageMessage } from '@/lib/whatsapp/uazapi-webhook-image-pa
 import { persistInboundImageMessage } from '@/lib/whatsapp/uazapi-webhook-image-persist'
 import { parseInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-parser'
 import { persistInboundTextMessage } from '@/lib/whatsapp/uazapi-webhook-persist'
+import { wasSkippedForUnresolvedLid } from '@/lib/whatsapp/uazapi-webhook-identity'
 
 // ============================================================
 // UAZAPI inbound webhook — persists inbound text messages, PDF
@@ -222,6 +223,18 @@ export async function POST(
     })
 
     return NextResponse.json({ status: imageResult.outcome, type: 'image' }, { status: 200 })
+  }
+
+  // Distinguishes the specific, identifiable "LID only, no phone
+  // could be resolved" reason from every other out-of-scope reason
+  // this event could have fallen through for (wrong event type,
+  // group, fromMe, unsupported content type, etc). No phone/name/
+  // payload/token — see wasSkippedForUnresolvedLid's own docstring.
+  if (wasSkippedForUnresolvedLid(parsed)) {
+    console.warn('[uazapi/webhook:capture] inbound skipped: canonical phone could not be resolved', {
+      instanceId: maskInstanceId(instanceId),
+      lid_detected: true,
+    })
   }
 
   console.log('[uazapi/webhook:persist] ignored', {

@@ -70,6 +70,9 @@ describe('parseInboundImageMessage — accepts a valid image', () => {
       providerDownloadId: '5591AAAA000011112222333344445555AAAA',
       chatId: '5591999999999@s.whatsapp.net',
       sender: '5591888888888@s.whatsapp.net',
+      senderPn: '5591888888888',
+      chatPhone: undefined,
+      chatWaChatid: undefined,
       senderName: 'Cliente Teste',
       occurredAt: new Date(1735686000000).toISOString(),
       mimeType: 'image/jpeg',
@@ -211,6 +214,31 @@ describe('parseInboundImageMessage — rejects missing ids', () => {
 
   it('rejects a missing sender', () => {
     expect(parseInboundImageMessage(realImagePayload({ message: { sender: '' } }))).toBeNull()
+  })
+})
+
+describe('parseInboundImageMessage — captures identity fields for the shared phone resolver', () => {
+  it('captures chat.phone and chat.wa_chatid when present', () => {
+    const parsed = parseInboundImageMessage(
+      realImagePayload({ chat: { phone: '5591777776666', wa_chatid: '5591777776666@s.whatsapp.net' } }),
+    )
+    expect(parsed?.chatPhone).toBe('5591777776666')
+    expect(parsed?.chatWaChatid).toBe('5591777776666@s.whatsapp.net')
+  })
+
+  it('omits senderPn/chatPhone/chatWaChatid when absent', () => {
+    const parsed = parseInboundImageMessage(realImagePayload({ message: { sender_pn: undefined } }))
+    expect(parsed?.senderPn).toBeUndefined()
+    expect(parsed?.chatPhone).toBeUndefined()
+    expect(parsed?.chatWaChatid).toBeUndefined()
+  })
+
+  it('still parses successfully when sender is an @lid JID (phone resolution is the persist layer\'s job, not the parser\'s)', () => {
+    const parsed = parseInboundImageMessage(
+      realImagePayload({ message: { sender: '208756952567854@lid', sender_pn: undefined } }),
+    )
+    expect(parsed).not.toBeNull()
+    expect(parsed?.sender).toBe('208756952567854@lid')
   })
 })
 

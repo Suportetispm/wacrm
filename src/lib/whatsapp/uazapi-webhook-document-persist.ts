@@ -31,6 +31,7 @@ import {
   UAZAPI_MEDIA_DOWNLOAD_MAX_DECODED_BYTES,
   UazapiHttpError,
 } from './uazapi-api'
+import { resolveCanonicalPhone } from './uazapi-webhook-identity'
 import type { ParsedInboundDocumentMessage } from './uazapi-webhook-document-parser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -119,20 +120,25 @@ function isValidBase64Charset(value: string): boolean {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function stripJidSuffix(value: string): string {
-  const at = value.indexOf('@')
-  return at >= 0 ? value.slice(0, at) : value
-}
-
-function normalizeCandidatePhone(raw: string): string | null {
-  const digits = stripJidSuffix(raw).replace(/\D/g, '')
-  if (digits.length < 7 || digits.length > 15) return null
-  return digits
-}
-
-/** Mirrors the text parser's phone-candidate priority, using the raw `sender`/`chatId` fields the document parser already validated as non-empty strings. */
-function extractPhone(parsed: ParsedInboundDocumentMessage): string | null {
-  return normalizeCandidatePhone(parsed.sender) ?? normalizeCandidatePhone(parsed.chatId)
+/**
+ * Same field priority and LID-vs-phone classification as the text
+ * path (`uazapi-webhook-parser.ts`), via the shared resolver — see
+ * `uazapi-webhook-identity.ts` for the rationale. `lidDetected` is
+ * surfaced (not currently logged here) so a future diagnostic can
+ * distinguish "no phone, saw a LID" from "no phone, nothing usable at
+ * all" without ever writing the LID's digits anywhere.
+ */
+function extractPhone(parsed: ParsedInboundDocumentMessage): {
+  phone: string | null
+  lidDetected: boolean
+} {
+  return resolveCanonicalPhone([
+    parsed.senderPn,
+    parsed.sender,
+    parsed.chatPhone,
+    parsed.chatId,
+    parsed.chatWaChatid,
+  ])
 }
 
 /**
@@ -191,7 +197,7 @@ export async function persistInboundDocumentMessage({
   instanceToken,
   parsed,
 }: PersistInboundDocumentMessageArgs): Promise<PersistInboundDocumentOutcome> {
-  const phone = extractPhone(parsed)
+  const { phone } = extractPhone(parsed)
   if (!phone) return { outcome: 'error', code: 'contact_failed' }
 
   const contact = await findOrCreateContact(

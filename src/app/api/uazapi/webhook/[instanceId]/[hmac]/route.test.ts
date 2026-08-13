@@ -158,6 +158,48 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — text path (unchanged)
     expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
   })
 
+  it('logs a distinct, safe diagnostic when the event is ignored specifically because only a LID (no phone) could be resolved', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.parseInboundTextMessage.mockReturnValue(null)
+    mocks.parseInboundDocumentMessage.mockReturnValue(null)
+    mocks.parseInboundImageMessage.mockReturnValue(null)
+
+    const res = await POST(
+      request({
+        EventType: 'messages',
+        message: { sender: '208756952567854@lid', chatid: '208756952567854@lid' },
+      }),
+      params,
+    )
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toEqual({ status: 'ignored' })
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[uazapi/webhook:capture] inbound skipped: canonical phone could not be resolved',
+      expect.objectContaining({ lid_detected: true }),
+    )
+    // Never leaks the LID's own digits into the log.
+    const serialized = JSON.stringify(warnSpy.mock.calls)
+    expect(serialized).not.toContain('208756952567854')
+
+    warnSpy.mockRestore()
+  })
+
+  it('does NOT log the LID diagnostic for an unrelated ignore reason (no message field at all)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mocks.parseInboundTextMessage.mockReturnValue(null)
+    mocks.parseInboundDocumentMessage.mockReturnValue(null)
+
+    await POST(request(), params)
+
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      '[uazapi/webhook:capture] inbound skipped: canonical phone could not be resolved',
+      expect.anything(),
+    )
+    warnSpy.mockRestore()
+  })
+
   it('covers audio/video/stickers and other unsupported media: still ignored when text, document, AND image parsers all reject it', async () => {
     mocks.parseInboundTextMessage.mockReturnValue(null)
     mocks.parseInboundDocumentMessage.mockReturnValue(null)

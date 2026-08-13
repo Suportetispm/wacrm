@@ -141,6 +141,49 @@ describe('parseInboundTextMessage', () => {
     expect(result).toBeNull()
   })
 
+  it('rejects an @lid sender/chatid when no real phone candidate exists anywhere (never fabricates a phone from the LID digits)', () => {
+    const result = parseInboundTextMessage(
+      validPayload({
+        message: {
+          sender_pn: undefined,
+          sender: '208756952567854@lid',
+          chatid: '208756952567854@lid',
+        },
+        chat: { phone: undefined, wa_chatid: undefined },
+      }),
+    )
+    expect(result).toBeNull()
+  })
+
+  it('prefers sender_pn over an @lid sender', () => {
+    const result = parseInboundTextMessage(
+      validPayload({
+        message: { sender_pn: '551199999999', sender: '208756952567854@lid' },
+      }),
+    )
+    expect(result?.phone).toBe('551199999999')
+  })
+
+  it('falls through an @lid sender to a later real-phone candidate (chat.phone)', () => {
+    const result = parseInboundTextMessage(
+      validPayload({
+        message: { sender_pn: undefined, sender: '208756952567854@lid', chatid: undefined },
+        chat: { phone: '551177776666', wa_chatid: undefined },
+      }),
+    )
+    expect(result?.phone).toBe('551177776666')
+  })
+
+  it('never treats an unrecognized JID suffix as a phone', () => {
+    const result = parseInboundTextMessage(
+      validPayload({
+        message: { sender_pn: undefined, sender: '551199999999@g.us', chatid: undefined },
+        chat: { phone: undefined, wa_chatid: undefined },
+      }),
+    )
+    expect(result).toBeNull()
+  })
+
   it('falls back to the phone as name when no name candidate exists', () => {
     const result = parseInboundTextMessage(
       validPayload({
