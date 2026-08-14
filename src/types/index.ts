@@ -883,3 +883,81 @@ export interface InternalTeamMember {
    *  QueueMember — the FK to profiles is composite). */
   profile?: { full_name: string; email: string; avatar_url: string | null } | null;
 }
+
+// ============================================================
+// Internal Tickets — operation (052-INT-C;
+// supabase/migrations/054_internal_ticket_operations.sql). All
+// mutations go through the create_internal_ticket/
+// update_internal_ticket/add_internal_ticket_comment RPCs — never a
+// raw INSERT/UPDATE from the app. id/account_id/internal_code/
+// created_by/created_at are immutable after creation (same trigger as
+// the catalogs above); scheduled_at/completed_at/cancelled_at/
+// cancel_reason exist in the schema but are out of scope for this
+// phase (no UI writes them yet).
+// ============================================================
+
+export interface InternalTicket {
+  id: string;
+  account_id: string;
+  internal_code: number;
+  title: string;
+  description: string | null;
+  type_id: string;
+  status_id: string;
+  stage_id: string | null;
+  team_id: string | null;
+  internal_company_id: string | null;
+  assigned_user_id: string | null;
+  created_by: string;
+  scheduled_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Exactly the event_type CHECK values from migration 052 — never
+ *  invent one outside this list. Some (scheduled_at_changed/completed/
+ *  cancelled) are schema-supported but unused by this phase's UI. */
+export type InternalTicketEventType =
+  | 'created'
+  | 'title_changed'
+  | 'description_changed'
+  | 'type_changed'
+  | 'status_changed'
+  | 'stage_changed'
+  | 'team_changed'
+  | 'assignee_changed'
+  | 'company_changed'
+  | 'scheduled_at_changed'
+  | 'comment_added'
+  | 'completed'
+  | 'cancelled';
+
+export interface InternalTicketEvent {
+  id: string;
+  account_id: string;
+  ticket_id: string;
+  event_type: InternalTicketEventType;
+  actor_user_id: string | null;
+  from_value: string | null;
+  to_value: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+/** Soft-delete only (deleted_at/deleted_by) — no physical DELETE RLS
+ *  policy exists. This phase only creates/lists comments; edit/delete
+ *  UI is a later phase. */
+export interface InternalTicketComment {
+  id: string;
+  account_id: string;
+  ticket_id: string;
+  author_id: string;
+  body: string;
+  deleted_at: string | null;
+  deleted_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
