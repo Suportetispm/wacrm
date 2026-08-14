@@ -17,6 +17,7 @@ import { QuickRepliesManager } from '@/components/settings/quick-replies-manager
 import { FieldsAndTagsPanel } from '@/components/settings/fields-and-tags-panel';
 import { DealsSettings } from '@/components/settings/deals-settings';
 import { QueueManager } from '@/components/settings/queue-manager';
+import { InternalTicketsPanel } from '@/components/settings/internal-tickets/internal-tickets-panel';
 import { MembersTab } from '@/components/settings/members-tab';
 import { ApiKeysSettings } from '@/components/settings/api-keys-settings';
 import {
@@ -81,6 +82,7 @@ function SettingsPageInner() {
     fields: <FieldsAndTagsPanel />,
     deals: <DealsSettings />,
     queues: <QueueManager />,
+    'internal-tickets': <InternalTicketsPanel />,
     members: <MembersTab />,
     api: <ApiKeysSettings />,
   };

@@ -8,6 +8,7 @@ import {
   PlugZap,
   Shield,
   Tags,
+  Ticket,
   User,
   UsersRound,
   Zap,
@@ -33,6 +34,7 @@ export const SETTINGS_SECTIONS = [
   'fields',
   'deals',
   'queues',
+  'internal-tickets',
   'members',
   'api',
 ] as const;
@@ -62,6 +64,11 @@ export const SECTION_META: Record<SettingsSection, SectionMeta> = {
   fields: { id: 'fields', label: 'Fields & tags', icon: Tags, group: 'workspace' },
   deals: { id: 'deals', label: 'Deals & currency', icon: Coins, group: 'workspace' },
   queues: { id: 'queues', label: 'Queues', icon: ListTodo, group: 'workspace', adminOnly: true },
+  // Not adminOnly, unlike `queues`: viewer/agent get read-only access
+  // to the catalogs here (RLS SELECT is open to any member, migration
+  // 052) — only the write controls inside are admin-gated, per-control,
+  // not the whole section.
+  'internal-tickets': { id: 'internal-tickets', label: 'Internal tickets', icon: Ticket, group: 'workspace' },
   members: { id: 'members', label: 'Team members', icon: UsersRound, group: 'workspace' },
   api: { id: 'api', label: 'API keys', icon: KeyRound, group: 'workspace' },
 };

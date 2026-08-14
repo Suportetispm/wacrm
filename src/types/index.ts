@@ -786,3 +786,100 @@ export interface TicketEvent {
   payload: Record<string, unknown>;
   created_at: string;
 }
+
+// ============================================================
+// Internal Tickets — configurable catalogs (052-INT-A;
+// supabase/migrations/052_internal_tickets_foundation.sql). This
+// phase (052-INT-B) only adds the settings/admin UI for the six
+// tables below — no internal_tickets CRUD yet.
+//
+// id/account_id/created_at (+ team_id/user_id on membership rows)
+// are immutable at the DB level (prevent_system_column_change
+// trigger) — never included in a PATCH payload from the client.
+// ============================================================
+
+export interface InternalTicketType {
+  id: string;
+  account_id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InternalTicketStatus {
+  id: string;
+  account_id: string;
+  name: string;
+  color: string;
+  is_active: boolean;
+  /** Encerramento ou não — nunca inferido do texto do nome. */
+  is_terminal: boolean;
+  /** No máximo um `true` por account (índice único parcial no banco);
+   *  um default nunca pode estar com is_active=false (CHECK no banco). */
+  is_default: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InternalTicketStage {
+  id: string;
+  account_id: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+  is_terminal: boolean;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Catálogo interno de empresas/unidades relacionadas a chamados —
+ *  distinto de `accounts` (o tenant da plataforma). Nunca confundir
+ *  os dois; ver comentário na migration 052 (seção 1.5). */
+export interface InternalCompany {
+  id: string;
+  account_id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Equipes do módulo Chamados Internos — exclusivas dele, nunca
+ *  reaproveitam `queues`. */
+export interface InternalTeam {
+  id: string;
+  account_id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  /** Hydrated by the list route — count of active memberships. Not a
+   *  DB column. */
+  active_member_count?: number;
+}
+
+/** team_id/user_id/account_id are immutable after creation (DB
+ *  trigger) — entry/exit is exclusively via is_active, and a row is
+ *  never physically deleted (no DELETE RLS policy exists). Moving
+ *  someone between teams = deactivate this row + add/reactivate a
+ *  row for the new team; never repoint team_id. */
+export interface InternalTeamMember {
+  id: string;
+  account_id: string;
+  team_id: string;
+  user_id: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  /** Hydrated by the list route (same two-round-trip pattern as
+   *  QueueMember — the FK to profiles is composite). */
+  profile?: { full_name: string; email: string; avatar_url: string | null } | null;
+}
