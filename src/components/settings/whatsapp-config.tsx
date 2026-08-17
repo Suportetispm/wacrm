@@ -13,6 +13,7 @@ import {
   Zap,
   AlertTriangle,
   RotateCcw,
+  QrCode,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
@@ -101,6 +102,12 @@ export function WhatsAppConfig() {
   const uazapiPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const uazapiPollErrorCountRef = useRef(0);
   const [showToken, setShowToken] = useState(false);
+  // Blank-slate accounts (no whatsapp_config row yet) default to the
+  // UAZAPI onboarding card, never the Meta form — see showMetaForm
+  // below. This lets an operator who explicitly wants Meta from day
+  // one reach the existing, unmodified Meta form without it being
+  // the ambient default for every new company.
+  const [showMetaFallback, setShowMetaFallback] = useState(false);
   const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
@@ -417,6 +424,9 @@ export function WhatsAppConfig() {
       setConnectionStatus('disconnected');
       setResetReason(null);
       setStatusMessage('');
+      // Back to a true blank slate — default to the UAZAPI onboarding
+      // card again, not whatever fallback state was open before reset.
+      setShowMetaFallback(false);
     } catch (err) {
       console.error('Reset error:', err);
       toast.error('Failed to reset configuration');
@@ -654,10 +664,19 @@ export function WhatsAppConfig() {
     Boolean(user) && canEditSettings && config?.provider !== 'uazapi';
 
   // Meta-only UI (fields, connection/registration status, Save/Test/
-  // Reset) only makes sense when there's no config yet (onboarding
-  // via Meta) or the account is already on Meta. Hidden — not just
-  // disabled — while UAZAPI is active.
-  const showMetaSection = !config || config.provider === 'meta';
+  // Reset) renders when the account is already on Meta, OR when a
+  // blank-slate account explicitly opted into the Meta form via the
+  // "Prefiro configurar a Meta Cloud API" link (showMetaFallback).
+  // UAZAPI is the default for every account with no config yet —
+  // this is what makes new companies match Fernandes' UI instead of
+  // landing on a Meta-first form by default. Provider === 'uazapi'
+  // never shows this section, matching the pre-existing behavior.
+  const hasNoConfig = !config;
+  const showMetaForm = config?.provider === 'meta' || (hasNoConfig && showMetaFallback);
+  // Meta credentials already saved (dormant) on a UAZAPI-active row —
+  // only then is the "preserved" notice worth showing; an account
+  // that never touched Meta has nothing to preserve.
+  const hasDormantMetaCreds = Boolean(config?.phone_number_id || config?.access_token);
 
   function handleCopyWebhookUrl() {
     navigator.clipboard.writeText(webhookUrl);
@@ -686,10 +705,10 @@ export function WhatsAppConfig() {
         title={t("title")}
         description={t("description")}
       />
-      <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
+      <div className={showMetaForm ? 'grid gap-6 lg:grid-cols-[1fr_380px]' : 'max-w-2xl'}>
       {/* Main config form */}
       <div className="space-y-6">
-        {showMetaSection ? (
+        {showMetaForm ? (
           <>
         {/* Corrupted-token reset banner */}
         {showResetBanner && (
@@ -979,29 +998,43 @@ export function WhatsAppConfig() {
         </Card>
           </>
         ) : (
-          <Alert className="bg-card border-border">
-            <AlertTitle className="text-foreground">
-              Meta Cloud API preservada
-            </AlertTitle>
-            <AlertDescription className="text-muted-foreground text-sm">
-              Esta conta está usando UAZAPI como provedor ativo. Eventuais
-              credenciais Meta ficam preservadas e ocultas aqui enquanto o
-              UAZAPI estiver ativo.
-            </AlertDescription>
-          </Alert>
+          // UAZAPI active: no "nothing to see here" filler when there's
+          // nothing Meta to preserve — the note only earns its place on
+          // screen when this account actually has dormant Meta
+          // credentials sitting on the row.
+          config?.provider === 'uazapi' && hasDormantMetaCreds && (
+            <Alert className="bg-card border-border">
+              <AlertTitle className="text-foreground">
+                Integração Meta preservada
+              </AlertTitle>
+              <AlertDescription className="text-muted-foreground text-sm">
+                As credenciais Meta existentes continuam salvas, mas não
+                estão em uso enquanto a UAZAPI estiver ativa.
+              </AlertDescription>
+            </Alert>
+          )
         )}
 
-        {/* UAZAPI (ETAPA 7.2) — sempre visível, com 4 ramos internos:
-            (a) nenhuma configuração, (b) instância válida desconectada/
-            conectando/hibernada, (c) instância local existe mas é
-            inválida na UAZAPI, (d) conectada. Nunca cria/reconecta
-            automaticamente — só por clique explícito. */}
+        {/* UAZAPI — sempre visível quando não é um blank-slate travado no
+            fallback Meta. Ramos internos: (a1) conta nova sem NENHUM
+            whatsapp_config — onboarding UAZAPI-first; (a2) config existe
+            mas provider é 'meta' (ou o operador abriu o fallback Meta a
+            partir do blank-slate) — UAZAPI como alternativa secundária;
+            (b) instância válida desconectada/conectando/hibernada;
+            (c) instância local existe mas é inválida na UAZAPI;
+            (d) conectada. Nunca cria/reconecta automaticamente — só por
+            clique explícito. Mesmo componente e mesma regra para toda
+            account — nada aqui depende de account_id ou data de criação. */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-foreground">UAZAPI (WhatsApp via QR Code)</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Conexão alternativa ao Meta Cloud API — um número oficial da empresa, conectado por QR Code.
-            </CardDescription>
+            <CardTitle className="text-foreground">
+              {hasNoConfig && !showMetaFallback ? 'Conexão com WhatsApp' : 'UAZAPI (WhatsApp via QR Code)'}
+            </CardTitle>
+            {!(hasNoConfig && !showMetaFallback) && (
+              <CardDescription className="text-muted-foreground">
+                Conexão alternativa ao Meta Cloud API — um número oficial da empresa, conectado por QR Code.
+              </CardDescription>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
             {uazapiError && (
@@ -1013,8 +1046,53 @@ export function WhatsAppConfig() {
               </Alert>
             )}
 
-            {/* (a) nenhuma configuração UAZAPI ainda */}
-            {(!config || config.provider !== 'uazapi') && (
+            {/* (a1) conta nova, nenhum whatsapp_config ainda — onboarding
+                UAZAPI-first, o mesmo para toda empresa nova. */}
+            {hasNoConfig && !showMetaFallback && (
+              <div className="space-y-3">
+                <p className="text-sm text-foreground">Nenhum WhatsApp conectado.</p>
+                <p className="text-sm text-muted-foreground">
+                  Conecte um número via UAZAPI usando QR Code.
+                </p>
+                {showCreateUazapiInstanceButton ? (
+                  <Button
+                    onClick={handleCreateUazapiInstance}
+                    disabled={creatingUazapiInstance}
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                  >
+                    {creatingUazapiInstance ? (
+                      <>
+                        <Loader2 className="size-4 animate-spin" />
+                        Conectando…
+                      </>
+                    ) : (
+                      <>
+                        <QrCode className="size-4" />
+                        Conectar WhatsApp via QR Code
+                      </>
+                    )}
+                  </Button>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Somente administradores podem conectar o WhatsApp desta empresa.
+                  </p>
+                )}
+                {showCreateUazapiInstanceButton && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMetaFallback(true)}
+                    className="block text-xs text-muted-foreground underline decoration-dotted hover:text-foreground"
+                  >
+                    Prefiro configurar a Meta Cloud API
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* (a2) já existe config em Meta, ou o operador pediu
+                explicitamente o fallback Meta a partir do blank-slate —
+                UAZAPI aparece aqui só como alternativa secundária. */}
+            {((hasNoConfig && showMetaFallback) || config?.provider === 'meta') && (
               <div className="space-y-3">
                 <p className="text-sm text-muted-foreground">
                   Nenhuma instância UAZAPI configurada para esta conta.
@@ -1038,6 +1116,15 @@ export function WhatsAppConfig() {
                   <p className="text-xs text-muted-foreground">
                     Somente administradores podem criar a instância UAZAPI.
                   </p>
+                )}
+                {hasNoConfig && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMetaFallback(false)}
+                    className="block text-xs text-muted-foreground underline decoration-dotted hover:text-foreground"
+                  >
+                    ← Usar UAZAPI (recomendado)
+                  </button>
                 )}
               </div>
             )}
@@ -1092,6 +1179,11 @@ export function WhatsAppConfig() {
                     Status: {uazapiStatus ? UAZAPI_STATUS_LABEL_PT[uazapiStatus] : 'Desconhecido'}
                   </span>
                 </div>
+                {config.uazapi_instance_name && (
+                  <p className="text-xs text-muted-foreground">
+                    Instância: <span className="text-foreground">{config.uazapi_instance_name}</span>
+                  </p>
+                )}
 
                 {uazapiStatus === 'connected' ? (
                   <Alert className="bg-emerald-950/30 border-emerald-700/50">
@@ -1168,7 +1260,7 @@ export function WhatsAppConfig() {
           </CardContent>
         </Card>
 
-        {showMetaSection && (
+        {showMetaForm && (
         <div className="flex flex-wrap gap-3">
           <Button
             onClick={handleSave}
@@ -1226,7 +1318,12 @@ export function WhatsAppConfig() {
         )}
       </div>
 
-      {/* Setup Instructions Sidebar */}
+      {/* Setup Instructions Sidebar — Meta-specific, so it only earns
+          its place next to the Meta form itself (provider === 'meta',
+          or the blank-slate Meta fallback). Never shown alongside the
+          UAZAPI-first onboarding/active views — that's exactly the
+          "Meta dominating the screen" pattern this pass removes. */}
+      {showMetaForm && (
       <div>
         <Card>
           <CardHeader>
@@ -1350,6 +1447,7 @@ export function WhatsAppConfig() {
           </CardContent>
         </Card>
       </div>
+      )}
     </div>
     </section>
   );
