@@ -662,7 +662,7 @@ function UserFormDialog({
             <div className="space-y-2">
               <Label>{t("fieldCompany")}</Label>
               <Select
-                value={form.accountId || undefined}
+                value={form.accountId}
                 onValueChange={(v) => v && handleAccountChange(v)}
               >
                 <SelectTrigger className="w-full">

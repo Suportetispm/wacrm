@@ -42,10 +42,13 @@ interface AdminAccount {
   default_currency: string;
   created_at: string;
   updated_at?: string;
+  /** Hydrated by GET /api/admin/accounts — count of profiles rows. */
+  user_count?: number;
 }
 
 type DialogState =
   | { kind: "closed" }
+  | { kind: "create" }
   | { kind: "view"; account: AdminAccount }
   | { kind: "rename"; account: AdminAccount }
   | { kind: "toggle"; account: AdminAccount };
@@ -57,11 +60,11 @@ type DialogState =
  * gated server-side by requirePlatformAdmin() (never trust the UI
  * itself as the authority — see the routes for the real check).
  *
- * Deliberately no "create" form: platform_create_account requires an
- * existing auth.users id, and prompting an operator to paste a raw
- * UUID into a form is exactly what this phase was told not to do.
- * The button below is visibly prepared but disabled until 6C.3 wires
- * up user creation.
+ * "Nova empresa" creates the company + its first owner in one POST
+ * (see /api/admin/accounts POST, mode (b)) — never a raw UUID field:
+ * the operator fills the owner's name/email/password exactly like
+ * the "Criar usuário" dialog, and the server creates that auth user
+ * before calling platform_create_account with its id.
  */
 export function AccountsPanel() {
   const t = useTranslations("Admin.accounts");
@@ -162,7 +165,7 @@ export function AccountsPanel() {
           <h1 className="text-lg font-semibold text-foreground">{t("title")}</h1>
           <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
         </div>
-        <Button disabled title={t("createDisabledHint")}>
+        <Button onClick={() => setDialog({ kind: "create" })}>
           <Plus className="size-4" />
           {t("createButton")}
         </Button>
@@ -193,6 +196,7 @@ export function AccountsPanel() {
                     <TableRow>
                       <TableHead>{t("colName")}</TableHead>
                       <TableHead>{t("colStatus")}</TableHead>
+                      <TableHead>{t("colUsers")}</TableHead>
                       <TableHead>{t("colCurrency")}</TableHead>
                       <TableHead>{t("colCreated")}</TableHead>
                       <TableHead className="text-right">{t("colActions")}</TableHead>
@@ -205,6 +209,7 @@ export function AccountsPanel() {
                         <TableCell>
                           <StatusBadge active={row.is_active} labelActive={t("active")} labelInactive={t("inactive")} />
                         </TableCell>
+                        <TableCell className="text-muted-foreground">{row.user_count ?? 0}</TableCell>
                         <TableCell className="text-muted-foreground">{row.default_currency}</TableCell>
                         <TableCell className="text-muted-foreground">
                           {new Date(row.created_at).toLocaleDateString()}
@@ -232,7 +237,7 @@ export function AccountsPanel() {
                       <div className="min-w-0">
                         <p className="truncate font-medium text-foreground">{row.name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {row.default_currency} · {new Date(row.created_at).toLocaleDateString()}
+                          {row.default_currency} · {new Date(row.created_at).toLocaleDateString()} · {t("colUsers")}: {row.user_count ?? 0}
                         </p>
                       </div>
                       <StatusBadge active={row.is_active} labelActive={t("active")} labelInactive={t("inactive")} />
@@ -253,6 +258,15 @@ export function AccountsPanel() {
           )}
         </CardContent>
       </Card>
+
+      <CreateAccountDialog
+        open={dialog.kind === "create"}
+        onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
+        onCreated={async () => {
+          setDialog({ kind: "closed" });
+          await load();
+        }}
+      />
 
       <Dialog
         open={dialog.kind === "view"}
@@ -407,5 +421,138 @@ function RowActions({
         {row.is_active ? <PowerOff className="size-4" /> : <Power className="size-4" />}
       </Button>
     </div>
+  );
+}
+
+/**
+ * "Nova empresa" — creates the company + its first owner in a single
+ * POST /api/admin/accounts call (mode (b): owner_full_name/
+ * owner_email/owner_password — never a raw owner_user_id field). A
+ * distinct, dedicated dialog from "Criar usuário" (users-panel.tsx) —
+ * the two actions are never merged into one modal/button, per product
+ * decision: creating a company always creates its first owner as part
+ * of the same action; creating a user always attaches to an EXISTING
+ * company and never owner.
+ */
+function CreateAccountDialog({
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: () => void;
+}) {
+  const t = useTranslations("Admin.accounts");
+  const [name, setName] = useState("");
+  const [ownerFullName, setOwnerFullName] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState("");
+  const [ownerPassword, setOwnerPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setOwnerFullName("");
+      setOwnerEmail("");
+      setOwnerPassword("");
+    }
+  }, [open]);
+
+  const valid =
+    name.trim().length > 0 &&
+    ownerFullName.trim().length > 0 &&
+    ownerEmail.trim().length > 0 &&
+    ownerPassword.length >= 8;
+
+  async function submit() {
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/admin/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          owner_full_name: ownerFullName.trim(),
+          owner_email: ownerEmail.trim(),
+          owner_password: ownerPassword,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        toast.error(body?.error ?? t("toastCreateFailed"));
+        return;
+      }
+      toast.success(t("toastCreated"));
+      onCreated();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("createTitle")}</DialogTitle>
+          <DialogDescription>{t("createDesc")}</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <Label htmlFor="account-create-name">{t("fieldCompanyName")}</Label>
+            <Input
+              id="account-create-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={80}
+              disabled={submitting}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="account-create-owner-name">{t("fieldOwnerName")}</Label>
+            <Input
+              id="account-create-owner-name"
+              value={ownerFullName}
+              onChange={(e) => setOwnerFullName(e.target.value)}
+              maxLength={120}
+              disabled={submitting}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="account-create-owner-email">{t("fieldOwnerEmail")}</Label>
+            <Input
+              id="account-create-owner-email"
+              type="email"
+              value={ownerEmail}
+              onChange={(e) => setOwnerEmail(e.target.value)}
+              disabled={submitting}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="account-create-owner-password">{t("fieldOwnerPassword")}</Label>
+            <Input
+              id="account-create-owner-password"
+              type="password"
+              autoComplete="new-password"
+              value={ownerPassword}
+              onChange={(e) => setOwnerPassword(e.target.value)}
+              disabled={submitting}
+            />
+            <p className="text-xs text-muted-foreground">{t("ownerPasswordHint")}</p>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            {t("cancel")}
+          </Button>
+          <Button onClick={submit} disabled={!valid || submitting}>
+            {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
+            {t("createSubmit")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

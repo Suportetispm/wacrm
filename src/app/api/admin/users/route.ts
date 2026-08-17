@@ -25,6 +25,7 @@ import { supabaseAdmin } from '@/lib/platform/admin-client'
 import { platformRpcErrorToResponse } from '@/lib/platform/rpc-errors'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { fetchPlatformUser, isManagedAccountRole, MANAGED_ACCOUNT_ROLES } from '@/lib/platform/users'
+import { compensateFailedUserCreation } from '@/lib/platform/user-compensation'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MIN_PASSWORD_LENGTH = 8
@@ -255,13 +256,14 @@ export async function POST(request: Request) {
   if (attachErr) {
     // Compensation: this auth user was created by THIS call — we
     // have its id straight from createUser(), never derived from
-    // email — and the account-linking step failed. Remove only this
-    // freshly created user; never a pre-existing one.
-    const { error: deleteErr } = await admin.auth.admin.deleteUser(newUserId)
-    if (deleteErr) {
-      console.error(
-        '[POST /api/admin/users] compensation deleteUser failed for a newly created auth user; manual cleanup required',
-      )
+    // email — and the account-linking step failed. handle_new_user()
+    // already gave it a temp personal account (+ auto-seeded catalog
+    // rows); compensateFailedUserCreation removes that account first
+    // (accounts.owner_user_id is ON DELETE RESTRICT, so the auth user
+    // can't be deleted while it still owns that account) and only
+    // then the auth user itself. Never touches a pre-existing account.
+    const compensation = await compensateFailedUserCreation(admin, newUserId)
+    if (!compensation.ok) {
       return NextResponse.json(
         {
           error:

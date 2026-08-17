@@ -44,11 +44,13 @@ function chain(result: unknown) {
     order: vi.fn(() => obj),
     range: vi.fn(() => obj),
     or: vi.fn(() => obj),
+    delete: vi.fn(() => obj),
     maybeSingle: vi.fn(async () => result),
     then: (resolve: (v: unknown) => void) => resolve(result),
   }
   return obj
 }
+
 
 function getRequest(qs = '') {
   return new Request(`http://localhost/api/admin/users${qs}`)
@@ -236,8 +238,17 @@ describe('POST /api/admin/users', () => {
 
   it("compensates and surfaces 400 when the attach RPC rejects the target account as the user's own temporary personal account (defense-in-depth guard)", async () => {
     mocks.requirePlatformAdmin.mockResolvedValue({ userId: 'super-1' })
+    let accountsCall = 0
     mocks.adminFrom.mockImplementation((table: string) => {
-      if (table === 'accounts') return chain({ data: { id: 'acct-1', is_active: true }, error: null })
+      if (table === 'accounts') {
+        accountsCall += 1
+        // 1st call: pre-createUser existence/active check. 2nd call:
+        // compensateFailedUserCreation's delete of the temp account.
+        return accountsCall === 1
+          ? chain({ data: { id: 'acct-1', is_active: true }, error: null })
+          : chain({ data: null, error: null })
+      }
+      if (table === 'profiles') return chain({ data: { account_id: 'temp-acct-1' }, error: null })
       throw new Error(`unexpected table ${table}`)
     })
     mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-1' } }, error: null })
@@ -289,6 +300,7 @@ describe('POST /api/admin/users', () => {
     mocks.requirePlatformAdmin.mockResolvedValue({ userId: 'super-1' })
     mocks.adminFrom.mockImplementation((table: string) => {
       if (table === 'accounts') return chain({ data: { id: 'acct-1', is_active: true }, error: null })
+      if (table === 'profiles') return chain({ data: { account_id: 'temp-acct-1' }, error: null })
       throw new Error(`unexpected table ${table}`)
     })
     mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-1' } }, error: null })
@@ -305,6 +317,7 @@ describe('POST /api/admin/users', () => {
     mocks.requirePlatformAdmin.mockResolvedValue({ userId: 'super-1' })
     mocks.adminFrom.mockImplementation((table: string) => {
       if (table === 'accounts') return chain({ data: { id: 'acct-1', is_active: true }, error: null })
+      if (table === 'profiles') return chain({ data: { account_id: 'temp-acct-1' }, error: null })
       throw new Error(`unexpected table ${table}`)
     })
     mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-1' } }, error: null })
@@ -354,5 +367,45 @@ describe('POST /api/admin/users', () => {
       p_full_name: 'Jane Doe',
       p_queue_ids: ['q1'],
     })
+  })
+
+  // PARTE 10 — regressão explícita do bug de produção: "Criar usuário"
+  // nunca pode criar uma linha nova em public.accounts. A rota em si
+  // nunca chama `.insert()` em 'accounts' (a única forma de uma conta
+  // nascer é o trigger handle_new_user() em auth.users, fora do
+  // controle desta rota, e platform_attach_user_to_account só faz
+  // UPDATE/DELETE em accounts, nunca INSERT) — este teste falha se
+  // algum código futuro reintroduzir um INSERT direto aqui.
+  it('REGRESSION: never inserts into accounts — an existing account_id is looked up read-only, never created', async () => {
+    mocks.requirePlatformAdmin.mockResolvedValue({ userId: 'super-1' })
+    const accountsInsert = vi.fn()
+    mocks.adminFrom.mockImplementation((table: string) => {
+      if (table === 'accounts') {
+        const obj = chain({ data: { id: 'acct-1', is_active: true }, error: null })
+        obj.insert = accountsInsert
+        return obj
+      }
+      throw new Error(`unexpected table ${table}`)
+    })
+    mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-1' } }, error: null })
+    mocks.rpc.mockResolvedValue({ error: null })
+    mocks.fetchPlatformUser.mockResolvedValue({
+      id: 'new-user-1',
+      full_name: 'Jane Doe',
+      email: 'jane@acme.com',
+      account: { id: 'acct-1', name: 'Acme' },
+      account_role: 'agent',
+      is_active: true,
+      queues: [],
+      created_at: 'now',
+    })
+
+    const res = await POST(postRequest(validBody))
+
+    expect(res.status).toBe(201)
+    expect(accountsInsert).not.toHaveBeenCalled()
+    // The only account-related RPC this route ever calls is the
+    // attach RPC — never platform_create_account.
+    expect(mocks.rpc).not.toHaveBeenCalledWith('platform_create_account', expect.anything())
   })
 })

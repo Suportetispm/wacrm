@@ -1,0 +1,45 @@
+-- ============================================================
+-- 057_account_default_currency_brl
+--
+-- Muda o valor DEFAULT de accounts.default_currency de 'USD' para
+-- 'BRL' para NOVAS accounts.
+--
+-- Por que isto é suficiente e não toca em nenhuma linha existente:
+-- os três pontos de criação de account no banco (handle_new_user,
+-- 017; platform_create_account modo A, 047; remove_account_member,
+-- 018) fazem todos `INSERT INTO accounts (name, owner_user_id)`
+-- sem especificar default_currency — o Postgres só consulta o
+-- DEFAULT da coluna quando o INSERT não informa o valor. Nenhum
+-- UPDATE é executado por esta migration; Fernandes de Macedo e
+-- qualquer outra account já existente mantêm exatamente o valor
+-- que já tinham.
+-- ============================================================
+
+ALTER TABLE public.accounts
+  ALTER COLUMN default_currency SET DEFAULT 'BRL';
+
+-- ============================================================
+-- VALIDAÇÃO MANUAL
+-- ============================================================
+--
+-- 1. Confirmar o novo default na definição da coluna:
+--
+-- SELECT column_default
+-- FROM information_schema.columns
+-- WHERE table_schema = 'public' AND table_name = 'accounts'
+--   AND column_name = 'default_currency';
+--
+-- Esperado: 'BRL'::text
+--
+-- 2. Confirmar que accounts existentes NÃO mudaram:
+--
+-- SELECT default_currency, count(*)
+-- FROM public.accounts
+-- GROUP BY default_currency;
+--
+-- Esperado: a distribuição anterior (ex.: todas 'USD') permanece
+-- idêntica logo após aplicar esta migration — nenhuma linha muda
+-- até que uma conta NOVA seja criada.
+--
+-- 3. Criar uma conta nova (signup ou Superadmin "Nova empresa") e
+--    confirmar default_currency = 'BRL' nessa linha específica.
