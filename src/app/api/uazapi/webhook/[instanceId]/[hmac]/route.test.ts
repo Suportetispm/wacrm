@@ -14,10 +14,15 @@ const mocks = vi.hoisted(() => ({
   parseInboundImageMessage: vi.fn(),
   persistInboundImageMessage: vi.fn(),
   decrypt: vi.fn(),
+  isAccountActive: vi.fn(),
 }))
 
 vi.mock('@/lib/whatsapp/uazapi-webhook-auth', () => ({
   verifyUazapiWebhookToken: mocks.verifyUazapiWebhookToken,
+}))
+
+vi.mock('@/lib/accounts/active', () => ({
+  isAccountActive: mocks.isAccountActive,
 }))
 
 vi.mock('@/lib/whatsapp/uazapi-webhook-parser', () => ({
@@ -138,6 +143,8 @@ beforeEach(() => {
   mocks.parseInboundDocumentMessage.mockReturnValue(null)
   mocks.parseInboundImageMessage.mockReturnValue(null)
   mocks.decrypt.mockReturnValue('fixture-decrypted-token')
+  mocks.isAccountActive.mockReset()
+  mocks.isAccountActive.mockResolvedValue(true)
   tokenLookupResult = { data: { uazapi_instance_token: 'fixture-ciphertext' }, error: null }
 })
 
@@ -574,5 +581,67 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — image path', () => {
 
     logSpy.mockRestore()
     errorSpy.mockRestore()
+  })
+})
+
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — accounts.is_active gate', () => {
+  it('active account (default) still persists — regression guard', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue({
+      externalMessageId: 'ext-active',
+      phone: '551199999999',
+      name: 'Fixture',
+      text: 'hi',
+      occurredAt: '2026-01-01T00:00:00.000Z',
+    })
+    mocks.persistInboundTextMessage.mockResolvedValue({ outcome: 'persisted' })
+
+    const res = await POST(request(), params)
+    const json = await res.json()
+
+    expect(mocks.isAccountActive).toHaveBeenCalledWith(expect.anything(), CONFIG_ROW.account_id)
+    expect(res.status).toBe(200)
+    expect(json).toEqual({ status: 'persisted' })
+    expect(mocks.persistInboundTextMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('inactive account: 200 {status: "ignored"}, no parsing/persistence attempted at all', async () => {
+    mocks.isAccountActive.mockResolvedValue(false)
+    mocks.parseInboundTextMessage.mockReturnValue({
+      externalMessageId: 'ext-inactive',
+      phone: '551199999999',
+      name: 'Fixture',
+      text: 'should never be read',
+      occurredAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const res = await POST(request(), params)
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toEqual({ status: 'ignored' })
+    expect(mocks.parseInboundTextMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundTextMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
+  })
+
+  it('inactive account: log line carries no phone/text/payload content', async () => {
+    mocks.isAccountActive.mockResolvedValue(false)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await POST(
+      request({
+        EventType: 'messages',
+        message: { text: 'SECRET-CONTENT-MARKER', sender: '5511977776666@s.whatsapp.net' },
+      }),
+      params,
+    )
+
+    const serialized = JSON.stringify(warnSpy.mock.calls)
+    expect(serialized).not.toContain('SECRET-CONTENT-MARKER')
+    expect(serialized).not.toContain('5511977776666')
+    expect(serialized).not.toContain(CONFIG_ROW.account_id)
+
+    warnSpy.mockRestore()
   })
 })

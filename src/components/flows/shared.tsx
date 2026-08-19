@@ -17,6 +17,7 @@
  */
 
 import {
+  Building2,
   Flag,
   GitFork,
   Inbox,
@@ -49,6 +50,7 @@ export type NodeType =
   | 'collect_input'
   | 'condition'
   | 'set_tag'
+  | 'assign_queue'
   | 'handoff'
   | 'end';
 
@@ -152,6 +154,13 @@ export const NODE_META: Record<
     blurb: 'Adds or removes a contact tag',
     category: 'logic',
   },
+  assign_queue: {
+    label: 'Assign to setor',
+    icon: Building2,
+    color: 'text-orange-400',
+    blurb: 'Routes the conversation to a setor (queue)',
+    category: 'flow',
+  },
   handoff: {
     label: 'Handoff to agent',
     icon: UserPlus,
@@ -205,6 +214,7 @@ const NODE_HUE: Record<NodeType, { l: number; c: number; h: number }> = {
   collect_input: { l: 0.65, c: 0.1, h: 185 }, // teal — capture
   condition: { l: 0.72, c: 0.15, h: 65 }, // amber — a fork in the road
   set_tag: { l: 0.65, c: 0.15, h: 350 }, // pink
+  assign_queue: { l: 0.68, c: 0.16, h: 45 }, // orange — routes to a setor
   handoff: { l: 0.65, c: 0.17, h: 16 }, // rose — hands off
   end: { l: 0.55, c: 0.01, h: 260 }, // neutral grey — terminal
 };
@@ -419,6 +429,14 @@ export function summarizeNode(
       return tagId
         ? t ? t('tagPicked', { mode, tag: tagId.slice(0, 8) }) : `${mode} tag ${tagId.slice(0, 8)}…`
         : t ? t('tagNone', { mode }) : `${mode} tag (none picked)`;
+    }
+    case 'assign_queue': {
+      const queueId = typeof cfg.queue_id === 'string' ? cfg.queue_id : '';
+      // No queue name available without an async lookup here — same
+      // convention as 'set_tag' above.
+      return queueId
+        ? t ? t('queuePicked', { queue: queueId.slice(0, 8) }) : `Sector ${queueId.slice(0, 8)}…`
+        : t ? t('queueNone') : 'Sector (none picked)';
     }
     case 'handoff': {
       const note = typeof cfg.note === 'string' ? cfg.note : '';

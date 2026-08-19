@@ -90,6 +90,7 @@ describe("defaultConfigFor", () => {
     "collect_input",
     "condition",
     "set_tag",
+    "assign_queue",
     "handoff",
     "end",
   ];

@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
+import { isAccountActive } from '@/lib/accounts/active'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { verifyUazapiWebhookToken } from '@/lib/whatsapp/uazapi-webhook-auth'
 import { parseInboundDocumentMessage } from '@/lib/whatsapp/uazapi-webhook-document-parser'
@@ -81,6 +83,20 @@ export async function POST(
     return NextResponse.json({ error: 'Unknown instance' }, { status: 404 })
   }
 
+  // Empresa desativada (accounts.is_active = false — ver
+  // 047_platform_account_management.sql): mesma checagem já aplicada
+  // ao webhook Meta (src/app/api/whatsapp/webhook/route.ts) — ack 200
+  // pra UAZAPI não entrar em retry, mas nada é lido/persistido daqui
+  // pra baixo (sem contato/conversa/mensagem, sem automação/flow/IA).
+  // Roda antes de ler o corpo — uma conta inativa não deve nem ter seu
+  // payload parseado.
+  if (!(await isAccountActive(supabaseAdmin(), config.account_id))) {
+    console.warn('[uazapi/webhook:capture] account is inactive — dropping inbound event', {
+      instanceId: maskInstanceId(instanceId),
+    })
+    return NextResponse.json({ status: 'ignored' }, { status: 200 })
+  }
+
   const contentType = request.headers.get('content-type') ?? ''
   if (!contentType.toLowerCase().includes('application/json')) {
     return NextResponse.json({ error: 'Expected application/json' }, { status: 415 })
@@ -136,6 +152,43 @@ export async function POST(
     console.log('[uazapi/webhook:persist]', result.outcome, {
       instanceId: maskInstanceId(instanceId),
     })
+
+    // Flow dispatch — only for a genuinely new message. A 'duplicate'
+    // (UAZAPI retry) must never re-enter/re-advance a run a second
+    // time for the same event. dispatchInboundToFlows never throws
+    // (its own internal try/catch), but this is wrapped defensively
+    // anyway — same convention already used for
+    // ensureUazapiWebhookRegistered in the connect/status routes.
+    // Never affects the response below, and never logs message
+    // content/tokens/payloads.
+    if (result.outcome === 'persisted') {
+      try {
+        await dispatchInboundToFlows({
+          accountId: config.account_id,
+          userId: config.user_id,
+          contactId: result.contactId,
+          conversationId: result.conversationId,
+          queueId: result.queueId,
+          assignedAgentId: result.assignedAgentId,
+          message: {
+            kind: 'text',
+            text: parsedMessage.text,
+            meta_message_id: parsedMessage.externalMessageId,
+          },
+          isFirstInboundMessage: result.isFirstInboundMessage,
+        })
+      } catch (err) {
+        console.error(
+          '[uazapi/webhook:flows] dispatchInboundToFlows threw unexpectedly:',
+          err instanceof Error ? err.name : 'UnknownError',
+        )
+      }
+    }
+
+    // Automations (runAutomationsForTrigger) are intentionally NOT
+    // connected here in this phase — the priority is UAZAPI→Flows for
+    // sector triage. Wiring automations would be the same shape as
+    // above, at the same point, if/when decided later.
 
     return NextResponse.json({ status: result.outcome }, { status: 200 })
   }

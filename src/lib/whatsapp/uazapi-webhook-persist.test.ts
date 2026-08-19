@@ -21,6 +21,8 @@ interface DbState {
   conversationInsertError: { code: string } | null
   rpcData: string | null
   rpcError: { code: string } | null
+  /** Prior customer-message count on the conversation — drives isFirstInboundMessage. */
+  priorCustomerMsgCount: number
 }
 
 function defaultState(overrides: Partial<DbState> = {}): DbState {
@@ -31,6 +33,7 @@ function defaultState(overrides: Partial<DbState> = {}): DbState {
     conversationInsertError: null,
     rpcData: 'persisted',
     rpcError: null,
+    priorCustomerMsgCount: 0,
     ...overrides,
   }
 }
@@ -81,12 +84,24 @@ function makeDb(state: DbState) {
     return b
   }
 
+  function messagesBuilder() {
+    const b: Record<string, unknown> = {}
+    b.select = vi.fn(() => b)
+    b.eq = vi.fn(() => b)
+    // isFirstInboundMessage's count query awaits the select/eq/eq chain
+    // directly (head:true, no terminal call) — thenable, like contacts/conversations.
+    b.then = (resolve: (v: unknown) => unknown) =>
+      resolve({ count: state.priorCustomerMsgCount, error: null })
+    return b
+  }
+
   const rpc = vi.fn(async () => ({ data: state.rpcData, error: state.rpcError }))
 
   const db = {
     from: vi.fn((table: string) => {
       if (table === 'contacts') return contactsBuilder()
       if (table === 'conversations') return conversationsBuilder()
+      if (table === 'messages') return messagesBuilder()
       throw new Error(`unexpected table in test: ${table}`)
     }),
     rpc,
@@ -101,7 +116,14 @@ describe('persistInboundTextMessage', () => {
   it('returns outcome "persisted" when the RPC reports a new row', async () => {
     const { db, rpc } = makeDb(defaultState({ rpcData: 'persisted' }))
     const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
-    expect(result).toEqual({ outcome: 'persisted' })
+    expect(result).toEqual({
+      outcome: 'persisted',
+      contactId: 'contact-new',
+      conversationId: 'conv-new',
+      queueId: null,
+      assignedAgentId: null,
+      isFirstInboundMessage: true,
+    })
     expect(rpc).toHaveBeenCalledWith('uazapi_persist_inbound_text_message', {
       p_conversation_id: 'conv-new',
       p_message_id: PARSED.externalMessageId,
@@ -113,7 +135,14 @@ describe('persistInboundTextMessage', () => {
   it('returns outcome "duplicate" when the RPC reports a conflict', async () => {
     const { db } = makeDb(defaultState({ rpcData: 'duplicate' }))
     const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
-    expect(result).toEqual({ outcome: 'duplicate' })
+    expect(result).toEqual({
+      outcome: 'duplicate',
+      contactId: 'contact-new',
+      conversationId: 'conv-new',
+      queueId: null,
+      assignedAgentId: null,
+      isFirstInboundMessage: true,
+    })
   })
 
   it('returns outcome "error" with code database_failed on a real RPC error', async () => {
@@ -160,7 +189,14 @@ describe('persistInboundTextMessage', () => {
       }),
     )
     const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
-    expect(result).toEqual({ outcome: 'persisted' })
+    expect(result).toEqual({
+      outcome: 'persisted',
+      contactId: 'contact-existing',
+      conversationId: 'conv-existing',
+      queueId: null,
+      assignedAgentId: null,
+      isFirstInboundMessage: true,
+    })
     expect(rpc).toHaveBeenCalledWith(
       'uazapi_persist_inbound_text_message',
       expect.objectContaining({ p_conversation_id: 'conv-existing' }),

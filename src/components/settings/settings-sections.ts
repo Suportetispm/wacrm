@@ -63,7 +63,7 @@ export const SECTION_META: Record<SettingsSection, SectionMeta> = {
   'quick-replies': { id: 'quick-replies', label: 'Quick replies', icon: Zap, group: 'workspace' },
   fields: { id: 'fields', label: 'Fields & tags', icon: Tags, group: 'workspace' },
   deals: { id: 'deals', label: 'Deals & currency', icon: Coins, group: 'workspace' },
-  queues: { id: 'queues', label: 'Queues', icon: ListTodo, group: 'workspace', adminOnly: true },
+  queues: { id: 'queues', label: 'Setores', icon: ListTodo, group: 'workspace', adminOnly: true },
   // Not adminOnly, unlike `queues`: viewer/agent get read-only access
   // to the catalogs here (RLS SELECT is open to any member, migration
   // 052) — only the write controls inside are admin-gated, per-control,

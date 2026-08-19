@@ -1,53 +1,14 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { loadActiveWhatsAppConfig } from '@/lib/whatsapp/active-config'
-import { computeUazapiWebhookToken } from '@/lib/whatsapp/uazapi-webhook-auth'
-import { configureWebhook, UazapiHttpError } from '@/lib/whatsapp/uazapi-api'
+import {
+  maskInstanceId,
+  registerUazapiWebhook,
+  resolveConfiguredSiteOrigin,
+} from '@/lib/whatsapp/uazapi-webhook-register'
 
 const ALLOWED_HOSTNAME_SUFFIX = '.trycloudflare.com'
 const MAX_BASE_URL_LENGTH = 200
-
-function maskInstanceId(id: string): string {
-  if (id.length <= 6) return '***'
-  return `${id.slice(0, 3)}…${id.slice(-2)}`
-}
-
-/**
- * Sanitized bucket for an external UAZAPI error message. Deliberately
- * coarse — a small, fixed enum, never the original text — so a log
- * line can carry a diagnostic signal without risking exposure of
- * whatever the external body actually contained.
- */
-type ExternalErrorCode =
-  | 'missing_token'
-  | 'invalid_token'
-  | 'unauthorized'
-  | 'forbidden'
-  | 'invalid_payload'
-  | 'unknown_external_error'
-
-/**
- * Classifies an external error message into an `ExternalErrorCode` by
- * keyword match only. `message` is lowercased and inspected in memory
- * for this single call and then discarded — it is never logged,
- * returned, or persisted anywhere; only the returned code is.
- */
-function classifyExternalError(message: string | undefined): ExternalErrorCode {
-  if (!message) return 'unknown_external_error'
-  const lower = message.toLowerCase()
-
-  if (lower.includes('missing') && lower.includes('token')) return 'missing_token'
-  if (lower.includes('invalid') && lower.includes('token')) return 'invalid_token'
-  if (lower.includes('forbidden')) return 'forbidden'
-  if (lower.includes('unauthorized')) return 'unauthorized'
-  if (
-    lower.includes('invalid') &&
-    (lower.includes('payload') || lower.includes('action') || lower.includes('body'))
-  ) {
-    return 'invalid_payload'
-  }
-  return 'unknown_external_error'
-}
 
 /**
  * Validates `baseUrl` per ETAPA 8.1E rules: https only, hostname must
@@ -55,6 +16,11 @@ function classifyExternalError(message: string | undefined): ExternalErrorCode {
  * bare suffix alone is rejected), no userinfo, no query/hash, no
  * custom port, empty/"/" pathname only. Returns the normalized
  * `url.origin` (never anything derived from path/query/hash) or null.
+ *
+ * Dev-only fallback path — only reached when `NEXT_PUBLIC_SITE_URL`
+ * isn't configured (see `resolveConfiguredSiteOrigin()`). In
+ * production the configured origin is used unconditionally and this
+ * function is never called.
  */
 function validateTunnelBaseUrl(raw: unknown): string | null {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_BASE_URL_LENGTH) {
@@ -84,12 +50,24 @@ function validateTunnelBaseUrl(raw: unknown): string | null {
  * POST /api/uazapi/webhook/register
  *
  * Registers this account's active UAZAPI instance to receive webhook
- * events at a temporary tunnel URL. Admin-only; `accountId` is always
- * resolved from the authenticated session, never from the request
- * body. The caller supplies ONLY the tunnel's base URL — instance id,
+ * events. Admin-only; `accountId` is always resolved from the
+ * authenticated session, never from the request body. Instance id,
  * instance token, HMAC, event list, and the final webhook URL are all
  * resolved/computed server-side and never accepted from the client,
  * never logged, and never returned in the response.
+ *
+ * Origin resolution — production vs. dev tunnel:
+ *   - If `NEXT_PUBLIC_SITE_URL` is configured (production), that's the
+ *     ONLY origin ever used — any `baseUrl` in the request body is
+ *     ignored entirely, not even read.
+ *   - Otherwise (dev, no site URL configured), the caller must supply
+ *     `{ baseUrl }` pointing at a `*.trycloudflare.com` tunnel — the
+ *     original ETAPA 8.1E contract, unchanged.
+ *
+ * This is also the manual "contingency" endpoint the Settings UI calls
+ * when the webhook status shows anything other than active — the
+ * normal path is automatic registration right after connecting (see
+ * `ensureUazapiWebhookRegistered` in connect/status routes).
  */
 export async function POST(request: Request) {
   let ctx
@@ -100,21 +78,34 @@ export async function POST(request: Request) {
   }
   const { supabase, accountId } = ctx
 
-  let body: unknown
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json({ error: 'invalid_base_url' }, { status: 400 })
-  }
+  const configuredOrigin = resolveConfiguredSiteOrigin()
 
-  const rawBaseUrl =
-    body && typeof body === 'object' && 'baseUrl' in body
-      ? (body as { baseUrl: unknown }).baseUrl
-      : undefined
-
-  const baseOrigin = validateTunnelBaseUrl(rawBaseUrl)
-  if (!baseOrigin) {
-    return NextResponse.json({ error: 'invalid_base_url' }, { status: 400 })
+  let baseOrigin: string
+  if (configuredOrigin.ok) {
+    baseOrigin = configuredOrigin.origin
+  } else if (configuredOrigin.reason === 'invalid') {
+    console.error(
+      '[uazapi/webhook/register] NEXT_PUBLIC_SITE_URL is set but not a valid https URL',
+    )
+    return NextResponse.json({ error: 'site_url_misconfigured' }, { status: 500 })
+  } else {
+    // Dev fallback — no NEXT_PUBLIC_SITE_URL configured, require a
+    // client-supplied tunnel baseUrl (unchanged ETAPA 8.1E contract).
+    let body: unknown
+    try {
+      body = await request.json()
+    } catch {
+      return NextResponse.json({ error: 'invalid_base_url' }, { status: 400 })
+    }
+    const rawBaseUrl =
+      body && typeof body === 'object' && 'baseUrl' in body
+        ? (body as { baseUrl: unknown }).baseUrl
+        : undefined
+    const tunnelOrigin = validateTunnelBaseUrl(rawBaseUrl)
+    if (!tunnelOrigin) {
+      return NextResponse.json({ error: 'invalid_base_url' }, { status: 400 })
+    }
+    baseOrigin = tunnelOrigin
   }
 
   // accountId intentionally omitted from this log line entirely —
@@ -123,78 +114,29 @@ export async function POST(request: Request) {
   console.log('[uazapi/webhook/register] starting registration')
 
   const config = await loadActiveWhatsAppConfig(supabase, accountId)
-  if (!config || config.provider !== 'uazapi' || !config.instanceToken) {
+  if (!config || config.provider !== 'uazapi' || !config.instanceToken || !config.uazapiInstanceId) {
     return NextResponse.json({ error: 'uazapi_not_configured' }, { status: 400 })
   }
 
-  // loadActiveWhatsAppConfig() doesn't expose uazapi_instance_id (only
-  // instanceToken + configId) — one small follow-up read through the
-  // same RLS-scoped client from requireRole(); no service role needed.
-  const { data: instanceRow, error: instanceRowError } = await supabase
-    .from('whatsapp_config')
-    .select('uazapi_instance_id')
-    .eq('id', config.configId)
-    .maybeSingle()
+  const instanceId = config.uazapiInstanceId
 
-  if (instanceRowError || !instanceRow?.uazapi_instance_id) {
-    return NextResponse.json({ error: 'instance_invalid' }, { status: 400 })
-  }
+  const result = await registerUazapiWebhook({
+    instanceToken: config.instanceToken,
+    baseOrigin,
+    instanceId,
+  })
 
-  const instanceId: string = instanceRow.uazapi_instance_id
-
-  const hmac = computeUazapiWebhookToken(instanceId)
-  if (!hmac) {
-    // UAZAPI_WEBHOOK_SECRET missing — fail closed, same convention as
-    // every other caller of computeUazapiWebhookToken/verifyUazapiWebhookToken.
-    console.error('[uazapi/webhook/register] UAZAPI_WEBHOOK_SECRET is not set')
-    return NextResponse.json({ error: 'webhook_registration_failed' }, { status: 500 })
-  }
-
-  // Full URL assembled ONLY in memory — never logged, returned, or
-  // persisted anywhere.
-  const webhookUrl = `${baseOrigin}/api/uazapi/webhook/${instanceId}/${hmac}`
-
-  // ------------------------------------------------------------------
-  // 'messages' is a best-effort guess, NOT confirmed against UAZAPI's
-  // official documentation. docs.uazapi.com is a JS-rendered SPA we
-  // could not extract a schema from; the live server's own
-  // /openapi.json, /swagger.json, and /docs paths also returned
-  // nothing usable without credentials (see ETAPA 8.1D review). The
-  // first real call may be rejected by UAZAPI with a validation
-  // error — if so, this literal must be corrected based on that real
-  // response, not guessed further.
-  // ------------------------------------------------------------------
-  const events = ['messages']
-  // Confirmed real via search (matches the existing comment in
-  // uazapi-api.ts) — suppresses echoes of our own outbound sends.
-  const excludeMessages = ['wasSentByApi']
-
-  try {
-    await configureWebhook({
-      instanceToken: config.instanceToken,
-      url: webhookUrl,
-      events,
-      excludeMessages,
+  if (!result.ok) {
+    if (result.reason === 'webhook_secret_missing') {
+      return NextResponse.json({ error: 'webhook_registration_failed' }, { status: 500 })
+    }
+    // Never surface the raw external message — only a fixed sanitized
+    // code, the external HTTP status, and the masked instance id.
+    console.error('[uazapi/webhook/register] configureWebhook failed', {
+      instanceId: maskInstanceId(instanceId),
+      externalStatus: result.externalStatus,
+      externalCode: result.externalCode,
     })
-  } catch (err) {
-    // Never surface err.message (may embed the URL or the external
-    // response body) and never log the external response body itself.
-    // The raw message is only ever passed to classifyExternalError,
-    // which reads it in memory and returns a fixed sanitized code —
-    // that code, the external HTTP status, and the masked instance id
-    // are the only things logged.
-    const externalStatus = err instanceof UazapiHttpError ? err.status : undefined
-    const externalCode = classifyExternalError(
-      err instanceof UazapiHttpError ? err.message : undefined,
-    )
-    console.error(
-      '[uazapi/webhook/register] configureWebhook failed',
-      {
-        instanceId: maskInstanceId(instanceId),
-        externalStatus,
-        externalCode,
-      },
-    )
     return NextResponse.json({ error: 'webhook_registration_failed' }, { status: 502 })
   }
 

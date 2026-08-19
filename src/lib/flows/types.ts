@@ -173,6 +173,22 @@ export interface SetTagNodeConfig {
   next_node_key: string;
 }
 
+/**
+ * Routes the conversation to a "setor" (queue). Auto-advances, like
+ * `set_tag` — it never ends the run itself; the flow author wires it
+ * to an `end` node (or a confirmation `send_message` first) via the
+ * graph, same as any other node. Never touches `assigned_agent_id`.
+ *
+ * `queue_id` is only ever trusted after the engine re-validates it
+ * belongs to the run's own account and is active — Flows run under
+ * service_role, so this config value can't be trusted at face value
+ * (see `executeAssignQueue` in engine.ts).
+ */
+export interface AssignQueueNodeConfig {
+  queue_id: string;
+  next_node_key: string;
+}
+
 // Terminal nodes carry no config — they just stop the run.
 export type EndNodeConfig = Record<string, never>;
 
@@ -193,6 +209,7 @@ export type FlowNodeConfig =
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
   | { node_type: "condition"; config: ConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
+  | { node_type: "assign_queue"; config: AssignQueueNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
   | { node_type: "end"; config: EndNodeConfig };
 
@@ -339,6 +356,17 @@ export interface DispatchInboundInput {
   contactId: string;
   conversationId: string;
   message: ParsedInbound;
+  /**
+   * The conversation's CURRENT queue/assignment, as already known to
+   * the caller (webhook route) with zero extra queries — both are
+   * columns on the same `conversations` row already fetched to
+   * resolve `conversationId`. Used only to guard against re-entering
+   * a `first_inbound_message`-triggered flow once the conversation
+   * has already been routed — see `findEntryFlow`. Never used for
+   * anything else; this is not a general-purpose conversation cache.
+   */
+  queueId?: string | null;
+  assignedAgentId?: string | null;
 }
 
 export interface DispatchInboundResult {

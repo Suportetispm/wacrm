@@ -716,6 +716,9 @@ export interface Queue {
    *  (and an active, agent/admin-role profile in this account) — enforced
    *  by the queues_validate_primary_agent trigger, not just this type. */
   primary_agent_id: string | null;
+  /** Only present on `GET /api/queues` — count of active queue_members
+   *  linked to this queue. Not a DB column. */
+  member_count?: number;
 }
 
 export type QueueMemberRole = 'agent' | 'supervisor';

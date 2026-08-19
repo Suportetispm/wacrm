@@ -26,7 +26,7 @@ function sqlCode(error: unknown): string {
 
 export async function GET() {
   try {
-    const { supabase } = await getCurrentAccount()
+    const { supabase, accountId } = await getCurrentAccount()
     // RLS (queues_select) scopes to the caller's account.
     const { data, error } = await supabase
       .from('queues')
@@ -36,7 +36,32 @@ export async function GET() {
       console.error('[queues] GET failed:', sqlCode(error))
       return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
     }
-    return NextResponse.json({ queues: data ?? [] })
+
+    // One bulk query for member counts (Settings → Setores lists how
+    // many active users are linked to each) instead of one query per
+    // queue. RLS (queue_members_select) already scopes this to the
+    // caller's account on its own; the explicit .eq('account_id', ...)
+    // just keeps this query self-evidently tenancy-scoped too.
+    const { data: memberRows, error: memberError } = await supabase
+      .from('queue_members')
+      .select('queue_id')
+      .eq('account_id', accountId)
+      .eq('is_active', true)
+    if (memberError) {
+      console.error('[queues] member count query failed:', sqlCode(memberError))
+    }
+    const memberCounts = new Map<string, number>()
+    for (const row of memberRows ?? []) {
+      const key = (row as { queue_id: string }).queue_id
+      memberCounts.set(key, (memberCounts.get(key) ?? 0) + 1)
+    }
+
+    const queues = (data ?? []).map((queue) => ({
+      ...queue,
+      member_count: memberCounts.get((queue as { id: string }).id) ?? 0,
+    }))
+
+    return NextResponse.json({ queues })
   } catch (err) {
     return toErrorResponse(err)
   }

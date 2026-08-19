@@ -81,17 +81,37 @@ describe('POST /api/queues', () => {
 })
 
 describe('GET /api/queues', () => {
-  it('reads through the RLS-scoped session client, not the admin client', async () => {
-    const order = vi.fn(async () => ({ data: [{ id: 'q1' }], error: null }))
-    const select = vi.fn(() => ({ order }))
-    const from = vi.fn(() => ({ select }))
-    mocks.getCurrentAccount.mockResolvedValue({ supabase: { from } })
+  it('reads through the RLS-scoped session client, not the admin client, and includes member_count', async () => {
+    // Table-aware mock: 'queues' supports .select().order(), the new
+    // member-count bulk query on 'queue_members' supports
+    // .select().eq().eq() — both go through the same RLS-scoped client.
+    const from = vi.fn((table: string) => {
+      if (table === 'queues') {
+        return {
+          select: () => ({
+            order: async () => ({ data: [{ id: 'q1' }], error: null }),
+          }),
+        }
+      }
+      if (table === 'queue_members') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: async () => ({ data: [{ queue_id: 'q1' }, { queue_id: 'q1' }], error: null }),
+            }),
+          }),
+        }
+      }
+      throw new Error(`unexpected table in test: ${table}`)
+    })
+    mocks.getCurrentAccount.mockResolvedValue({ supabase: { from }, accountId: 'acct-1' })
 
     const res = await GET()
     const json = await res.json()
 
     expect(res.status).toBe(200)
-    expect(json.queues).toEqual([{ id: 'q1' }])
+    expect(json.queues).toEqual([{ id: 'q1', member_count: 2 }])
     expect(from).toHaveBeenCalledWith('queues')
+    expect(from).toHaveBeenCalledWith('queue_members')
   })
 })

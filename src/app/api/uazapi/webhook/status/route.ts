@@ -2,46 +2,9 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { loadActiveWhatsAppConfig } from '@/lib/whatsapp/active-config'
 import { getWebhookConfiguration, UazapiHttpError } from '@/lib/whatsapp/uazapi-api'
+import { classifyExternalError } from '@/lib/whatsapp/uazapi-webhook-register'
 
 const GENERIC_UAZAPI_ERROR = 'Unable to reach UAZAPI. Please try again.'
-
-/**
- * Sanitized bucket for an external UAZAPI error message — same
- * convention as `webhook/register/route.ts`. A small, fixed enum,
- * never the original text, so a log line can carry a diagnostic
- * signal without risking exposure of whatever the external body
- * actually contained.
- */
-type ExternalErrorCode =
-  | 'missing_token'
-  | 'invalid_token'
-  | 'unauthorized'
-  | 'forbidden'
-  | 'invalid_payload'
-  | 'unknown_external_error'
-
-/**
- * Classifies an external error message into an `ExternalErrorCode` by
- * keyword match only. `message` is lowercased and inspected in memory
- * for this single call and then discarded — it is never logged,
- * returned, or persisted anywhere; only the returned code is.
- */
-function classifyExternalError(message: string | undefined): ExternalErrorCode {
-  if (!message) return 'unknown_external_error'
-  const lower = message.toLowerCase()
-
-  if (lower.includes('missing') && lower.includes('token')) return 'missing_token'
-  if (lower.includes('invalid') && lower.includes('token')) return 'invalid_token'
-  if (lower.includes('forbidden')) return 'forbidden'
-  if (lower.includes('unauthorized')) return 'unauthorized'
-  if (
-    lower.includes('invalid') &&
-    (lower.includes('payload') || lower.includes('action') || lower.includes('body'))
-  ) {
-    return 'invalid_payload'
-  }
-  return 'unknown_external_error'
-}
 
 /**
  * GET /api/uazapi/webhook/status

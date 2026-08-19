@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentAccount, toErrorResponse } from '@/lib/auth/account'
 import { loadActiveWhatsAppConfig } from '@/lib/whatsapp/active-config'
 import { getInstanceStatus, UazapiHttpError } from '@/lib/whatsapp/uazapi-api'
+import { ensureUazapiWebhookRegistered } from '@/lib/whatsapp/uazapi-webhook-register'
 
 const GENERIC_UAZAPI_ERROR = 'Unable to reach UAZAPI. Please try again.'
 
@@ -87,6 +88,30 @@ export async function GET() {
     console.warn('[uazapi/status] status mirror failed:', updateError.message)
   } else if (!updated || updated.length === 0) {
     console.warn('[uazapi/status] status mirror affected 0 rows — provider changed concurrently')
+  }
+
+  // Best-effort automatic webhook registration — fires on every poll
+  // that resolves to 'connected', not just the transition edge. This
+  // is deliberate: it's what self-heals an instance that was already
+  // connected before this registration flow existed (or whose earlier
+  // registration attempt failed) the next time anyone loads or polls
+  // this account's WhatsApp settings, with no migration/backfill
+  // needed. UAZAPI's webhook endpoint is create-or-update, so
+  // re-registering an already-correct webhook is a safe no-op. Never
+  // throws, never affects this response — connection status must
+  // never look broken because of a registration hiccup.
+  if (result.status === 'connected' && config.uazapiInstanceId) {
+    try {
+      await ensureUazapiWebhookRegistered({
+        instanceId: config.uazapiInstanceId,
+        instanceToken: config.instanceToken,
+      })
+    } catch (err) {
+      console.error(
+        '[uazapi/status] ensureUazapiWebhookRegistered threw unexpectedly:',
+        err instanceof Error ? err.name : 'UnknownError',
+      )
+    }
   }
 
   return NextResponse.json({

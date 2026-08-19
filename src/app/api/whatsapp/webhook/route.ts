@@ -757,6 +757,8 @@ async function processMessage(
     userId: configOwnerUserId,
     contactId: contactRecord.id,
     conversationId: conversation.id,
+    queueId: conversation.queue_id,
+    assignedAgentId: conversation.assigned_agent_id,
     message:
       interactiveReplyId
         ? {

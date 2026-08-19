@@ -27,9 +27,30 @@ export interface PersistInboundTextMessageArgs {
   parsed: ParsedInboundTextMessage
 }
 
+/**
+ * `contactId`/`conversationId`/`queueId`/`assignedAgentId`/
+ * `isFirstInboundMessage` on the success outcomes are what let the
+ * route dispatch to Flows (`dispatchInboundToFlows`) with the same
+ * shape of data the Meta webhook already provides — see
+ * `src/app/api/whatsapp/webhook/route.ts` for the parallel logic.
+ */
 export type PersistInboundOutcome =
-  | { outcome: 'persisted' }
-  | { outcome: 'duplicate' }
+  | {
+      outcome: 'persisted'
+      contactId: string
+      conversationId: string
+      queueId: string | null
+      assignedAgentId: string | null
+      isFirstInboundMessage: boolean
+    }
+  | {
+      outcome: 'duplicate'
+      contactId: string
+      conversationId: string
+      queueId: string | null
+      assignedAgentId: string | null
+      isFirstInboundMessage: boolean
+    }
   | { outcome: 'error'; code: 'contact_failed' | 'conversation_failed' | 'database_failed' }
 
 /** Postgres SQLSTATE, when available — never the error message text. */
@@ -94,6 +115,26 @@ export async function persistInboundTextMessage({
   const conversation = await findOrCreateConversation(db, accountId, configOwnerUserId, contact.id)
   if (!conversation) return { outcome: 'error', code: 'conversation_failed' }
 
+  // Computed BEFORE the message insert below, same convention as the
+  // Meta webhook (src/app/api/whatsapp/webhook/route.ts) — counts
+  // prior customer-sent messages on this exact conversation, not
+  // "is the contact new" (a manually-added or CSV-imported contact
+  // can have a conversation row with zero messages yet).
+  const { count: priorCustomerMsgCount } = await db
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conversation.id)
+    .eq('sender_type', 'customer')
+  const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
+
+  const outcomeFields = {
+    contactId: contact.id as string,
+    conversationId: conversation.id as string,
+    queueId: (conversation.queue_id as string | null) ?? null,
+    assignedAgentId: (conversation.assigned_agent_id as string | null) ?? null,
+    isFirstInboundMessage,
+  }
+
   const { data, error } = await db.rpc('uazapi_persist_inbound_text_message', {
     p_conversation_id: conversation.id,
     p_message_id: parsed.externalMessageId,
@@ -109,8 +150,8 @@ export async function persistInboundTextMessage({
     return { outcome: 'error', code: 'database_failed' }
   }
 
-  if (data === 'persisted') return { outcome: 'persisted' }
-  if (data === 'duplicate') return { outcome: 'duplicate' }
+  if (data === 'persisted') return { outcome: 'persisted', ...outcomeFields }
+  if (data === 'duplicate') return { outcome: 'duplicate', ...outcomeFields }
 
   // Anything else (unexpected return shape) is treated conservatively
   // as a failure rather than silently assumed to be a success.

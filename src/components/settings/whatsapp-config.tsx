@@ -45,6 +45,17 @@ const UAZAPI_STATUS_LABEL_PT: Record<UazapiInstanceStatus, string> = {
   hibernated: 'Hibernado',
 };
 
+type UazapiWebhookState = 'unknown' | 'checking' | 'active' | 'not_configured' | 'disabled' | 'error';
+
+const UAZAPI_WEBHOOK_STATE_LABEL_PT: Record<UazapiWebhookState, string> = {
+  unknown: 'Desconhecido',
+  checking: 'Verificando…',
+  active: 'Ativo',
+  not_configured: 'Não configurado',
+  disabled: 'Desativado',
+  error: 'Erro ao verificar',
+};
+
 /** Maps a failed fetch to PT-BR copy + whether it means "instance is
  *  gone/invalid" (→ offer recreate) vs. everything else (→ just an
  *  error message, no recreate offered). Shared by every UAZAPI call
@@ -97,6 +108,8 @@ export function WhatsAppConfig() {
   const [uazapiRefreshingStatus, setUazapiRefreshingStatus] = useState(false);
   const [uazapiError, setUazapiError] = useState<string | null>(null);
   const [uazapiInstanceInvalid, setUazapiInstanceInvalid] = useState(false);
+  const [uazapiWebhookState, setUazapiWebhookState] = useState<UazapiWebhookState>('unknown');
+  const [registeringUazapiWebhook, setRegisteringUazapiWebhook] = useState(false);
   const [creatingUazapiInstance, setCreatingUazapiInstance] = useState(false);
   const [recreatingUazapiInstance, setRecreatingUazapiInstance] = useState(false);
   const uazapiPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -451,6 +464,32 @@ export function WhatsAppConfig() {
     uazapiPollErrorCountRef.current = 0;
   }, []);
 
+  // Read-only lookup of the current webhook registration state for
+  // this account's instance — GET /api/uazapi/webhook/status never
+  // mutates anything server-side. Never surfaces URL/HMAC/token, only
+  // the enum-mapped badge state.
+  const refreshUazapiWebhookStatus = useCallback(async () => {
+    setUazapiWebhookState('checking');
+    try {
+      const res = await fetch('/api/uazapi/webhook/status', { method: 'GET' });
+      const data = await res.json();
+      if (!res.ok) {
+        setUazapiWebhookState('error');
+        return;
+      }
+      if (!data.configured) {
+        setUazapiWebhookState('not_configured');
+      } else if (data.enabled) {
+        setUazapiWebhookState('active');
+      } else {
+        setUazapiWebhookState('disabled');
+      }
+    } catch (err) {
+      console.error('uazapi webhook status refresh failed:', err);
+      setUazapiWebhookState('error');
+    }
+  }, []);
+
   const refreshUazapiStatus = useCallback(async (): Promise<UazapiInstanceStatus | 'invalid' | null> => {
     try {
       const res = await fetch('/api/uazapi/status', { method: 'GET' });
@@ -471,13 +510,21 @@ export function WhatsAppConfig() {
         setUazapiQrCode(null);
         setUazapiPairCode(null);
       }
+      if (data.status === 'connected') {
+        // The status route itself best-effort auto-registers the
+        // webhook whenever it resolves to 'connected' — this just
+        // reflects that outcome in the UI a beat later. Fire-and-
+        // forget: a failure here only affects the badge, never the
+        // connection status above.
+        void refreshUazapiWebhookStatus();
+      }
       return data.status as UazapiInstanceStatus;
     } catch (err) {
       console.error('uazapi status refresh failed:', err);
       setUazapiError('Erro de rede ao consultar status.');
       return null;
     }
-  }, []);
+  }, [refreshUazapiWebhookStatus]);
 
   const startUazapiPolling = useCallback(() => {
     stopUazapiPolling();
@@ -550,6 +597,11 @@ export function WhatsAppConfig() {
       } else if (data.status === 'connected') {
         stopUazapiPolling();
         toast.success('WhatsApp já está conectado.');
+        // Mirrors the same fire-and-forget reflection as
+        // refreshUazapiStatus — the connect route itself best-effort
+        // auto-registers the webhook when it resolves straight to
+        // 'connected' (resuming an already-connected session).
+        void refreshUazapiWebhookStatus();
       }
     } catch (err) {
       console.error('uazapi connect failed:', err);
@@ -564,6 +616,39 @@ export function WhatsAppConfig() {
     setUazapiRefreshingStatus(true);
     await refreshUazapiStatus();
     setUazapiRefreshingStatus(false);
+  }
+
+  // Manual contingency — the normal path is automatic registration
+  // right after connecting (see connect/status routes). This is what
+  // the "Configurar webhook" / "Reativar webhook" button calls when
+  // the badge shows anything other than "Ativo". No body needed in
+  // production: the server resolves the webhook origin itself from
+  // NEXT_PUBLIC_SITE_URL and never trusts a client-supplied baseUrl.
+  async function handleRegisterUazapiWebhook() {
+    if (registeringUazapiWebhook) return;
+    setRegisteringUazapiWebhook(true);
+    setUazapiError(null);
+    try {
+      const res = await fetch('/api/uazapi/webhook/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setUazapiError(data?.error || 'Não foi possível configurar o webhook.');
+        setUazapiWebhookState('error');
+        return;
+      }
+      toast.success('Webhook configurado com sucesso.');
+      await refreshUazapiWebhookStatus();
+    } catch (err) {
+      console.error('uazapi webhook register failed:', err);
+      setUazapiError('Erro de rede ao configurar o webhook.');
+      setUazapiWebhookState('error');
+    } finally {
+      setRegisteringUazapiWebhook(false);
+    }
   }
 
   // Estado (a): nenhuma configuração UAZAPI ainda para esta conta.
@@ -643,6 +728,7 @@ export function WhatsAppConfig() {
       }
       setUazapiInstanceInvalid(false);
       setUazapiStatus(null);
+      setUazapiWebhookState('unknown');
       toast.success('Instância UAZAPI recriada.');
       if (accountId) await fetchConfig(accountId);
     } catch (err) {
@@ -1183,6 +1269,46 @@ export function WhatsAppConfig() {
                   <p className="text-xs text-muted-foreground">
                     Instância: <span className="text-foreground">{config.uazapi_instance_name}</span>
                   </p>
+                )}
+
+                {/* Webhook: só faz sentido consultar depois de conectado —
+                    o registro normal é automático (connect/status routes);
+                    este bloco só existe pra visibilidade + contingência
+                    manual quando o automático falhar ou nunca tiver
+                    rodado (instâncias conectadas antes desta mudança). */}
+                {uazapiStatus === 'connected' && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {uazapiWebhookState === 'active' ? (
+                      <CheckCircle2 className="size-4 text-emerald-400" />
+                    ) : uazapiWebhookState === 'checking' ? (
+                      <Loader2 className="size-4 animate-spin text-amber-400" />
+                    ) : (
+                      <XCircle className="size-4 text-muted-foreground" />
+                    )}
+                    <span className="text-sm text-foreground">
+                      Webhook: {UAZAPI_WEBHOOK_STATE_LABEL_PT[uazapiWebhookState]}
+                    </span>
+                    {canEditSettings && uazapiWebhookState !== 'active' && uazapiWebhookState !== 'checking' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRegisterUazapiWebhook}
+                        disabled={registeringUazapiWebhook}
+                        className="border-amber-700/50 text-amber-300 hover:bg-amber-950/30"
+                      >
+                        {registeringUazapiWebhook ? (
+                          <>
+                            <Loader2 className="size-4 animate-spin" />
+                            Configurando…
+                          </>
+                        ) : uazapiWebhookState === 'not_configured' ? (
+                          'Configurar webhook'
+                        ) : (
+                          'Reativar webhook'
+                        )}
+                      </Button>
+                    )}
+                  </div>
                 )}
 
                 {uazapiStatus === 'connected' ? (

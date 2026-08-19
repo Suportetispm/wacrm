@@ -281,6 +281,7 @@ function QueueManagerContent() {
               <TableHead>{t('colStatus')}</TableHead>
               <TableHead>{t('colPriority')}</TableHead>
               <TableHead>{t('colWait')}</TableHead>
+              <TableHead>{t('colMembers')}</TableHead>
               <TableHead className="text-right">{t('colActions')}</TableHead>
             </TableRow>
           </TableHeader>
@@ -296,6 +297,7 @@ function QueueManagerContent() {
                 <TableCell>{queueStatusBadge(queue)}</TableCell>
                 <TableCell className="text-muted-foreground">{PRIORITY_LABEL[queue.default_priority]}</TableCell>
                 <TableCell className="text-muted-foreground">{queue.default_wait_minutes}m</TableCell>
+                <TableCell className="text-muted-foreground">{queue.member_count ?? 0}</TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" size="sm" onClick={() => setMembersQueue(queue)} title={t('membersTitle')}>

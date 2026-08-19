@@ -15,7 +15,7 @@ import { decrypt, encrypt, isLegacyFormat } from './encryption'
 
 export type ActiveWhatsAppConfig =
   | { provider: 'meta'; phoneNumberId: string; accessToken: string; configId: string }
-  | { provider: 'uazapi'; instanceToken: string; configId: string }
+  | { provider: 'uazapi'; instanceToken: string; configId: string; uazapiInstanceId: string | null }
 
 /**
  * Load and decrypt the account's active WhatsApp config. Returns
@@ -61,7 +61,12 @@ export async function loadActiveWhatsAppConfig(
         })
     }
 
-    return { provider: 'uazapi', instanceToken, configId: row.id }
+    return {
+      provider: 'uazapi',
+      instanceToken,
+      configId: row.id,
+      uazapiInstanceId: row.uazapi_instance_id ?? null,
+    }
   }
 
   // provider === 'meta'

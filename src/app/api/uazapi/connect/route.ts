@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { loadActiveWhatsAppConfig } from '@/lib/whatsapp/active-config'
 import { connectInstance, UazapiHttpError } from '@/lib/whatsapp/uazapi-api'
+import { ensureUazapiWebhookRegistered } from '@/lib/whatsapp/uazapi-webhook-register'
 
 const GENERIC_UAZAPI_ERROR = 'Unable to reach UAZAPI. Please try again.'
 
@@ -74,6 +75,27 @@ export async function POST() {
     console.warn('[uazapi/connect] status mirror failed:', updateError.message)
   } else if (!updated || updated.length === 0) {
     console.warn('[uazapi/connect] status mirror affected 0 rows — provider changed concurrently')
+  }
+
+  // Best-effort automatic webhook registration — only fires when this
+  // call resolved straight to 'connected' (e.g. resuming an already
+  // fully-connected session; the normal QR-scan case returns
+  // 'connecting' here and gets registered later from GET /status once
+  // polling detects the transition). Never throws, never affects this
+  // response — a registration failure must not look like a connection
+  // failure to the caller (see uazapi-webhook-register.ts).
+  if (result.status === 'connected' && config.uazapiInstanceId) {
+    try {
+      await ensureUazapiWebhookRegistered({
+        instanceId: config.uazapiInstanceId,
+        instanceToken: config.instanceToken,
+      })
+    } catch (err) {
+      console.error(
+        '[uazapi/connect] ensureUazapiWebhookRegistered threw unexpectedly:',
+        err instanceof Error ? err.name : 'UnknownError',
+      )
+    }
   }
 
   return NextResponse.json({

@@ -44,6 +44,7 @@ import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import {
+  type AssignQueueNodeConfig,
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
   type DispatchInboundInput,
@@ -119,7 +120,8 @@ export function isAutoAdvancing(node_type: string): boolean {
     node_type === "send_message" ||
     node_type === "send_media" ||
     node_type === "condition" ||
-    node_type === "set_tag"
+    node_type === "set_tag" ||
+    node_type === "assign_queue"
   );
 }
 
@@ -316,6 +318,8 @@ async function findEntryFlow(
   accountId: string,
   message: ParsedInbound,
   isFirstInbound: boolean,
+  queueId: string | null | undefined,
+  assignedAgentId: string | null | undefined,
 ): Promise<FlowRow | null> {
   // Only text messages can match an entry trigger. Interactive replies
   // are responses to existing prompts; they never start a new flow.
@@ -332,6 +336,14 @@ async function findEntryFlow(
     .order("created_at", { ascending: true });
   if (error || !flows) return null;
 
+  // A conversation already routed to a setor, or already assigned to
+  // an agent, must never re-enter a first_inbound_message-triggered
+  // flow (e.g. a triage menu) — even if this happens to be the first
+  // *customer* message the engine has seen for it (a proactively
+  // agent-created conversation, for instance). Lives here, once, for
+  // every provider — never per-account/per-flow hardcoding.
+  const alreadyRouted = Boolean(queueId) || Boolean(assignedAgentId);
+
   const typed = flows as FlowRow[];
   for (const flow of typed) {
     if (flow.trigger_type === "keyword") {
@@ -341,7 +353,7 @@ async function findEntryFlow(
       )) {
         return flow;
       }
-    } else if (flow.trigger_type === "first_inbound_message" && isFirstInbound) {
+    } else if (flow.trigger_type === "first_inbound_message" && isFirstInbound && !alreadyRouted) {
       return flow;
     }
     // 'manual' triggers do not auto-start from inbound messages.
@@ -455,6 +467,56 @@ async function executeHandoff(
     assigned_to: cfg.assign_to ?? null,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
+}
+
+/**
+ * Routes the run's conversation to a setor (queue). `run.account_id`/
+ * `run.conversation_id` are the run's own state — `node.config` is
+ * never trusted for tenancy (Flows execute via service_role, which
+ * bypasses RLS entirely, so `queue_id` in a node's config is only a
+ * hint the builder wrote — it must be re-verified here before use,
+ * same requirement as `runAutomationsForTrigger`'s contact ownership
+ * check in `src/lib/automations/engine.ts`). Never touches
+ * `assigned_agent_id`. Non-fatal on any validation/write failure —
+ * mirrors `set_tag`'s "don't strand the customer mid-flow" contract.
+ */
+async function executeAssignQueue(
+  db: AdminClient,
+  run: FlowRunRow,
+  node: FlowNodeRow,
+): Promise<void> {
+  const cfg = node.config as unknown as AssignQueueNodeConfig;
+  try {
+    if (!run.conversation_id) {
+      throw new Error("run has no conversation_id");
+    }
+    const { data: queue, error } = await db
+      .from("queues")
+      .select("id, account_id, is_active")
+      .eq("id", cfg.queue_id)
+      .maybeSingle();
+    if (error || !queue) {
+      throw new Error("queue not found");
+    }
+    if (queue.account_id !== run.account_id) {
+      throw new Error("queue belongs to a different account");
+    }
+    if (!queue.is_active) {
+      throw new Error("queue is not active");
+    }
+    await db
+      .from("conversations")
+      .update({ queue_id: queue.id, updated_at: new Date().toISOString() })
+      .eq("id", run.conversation_id)
+      .eq("account_id", run.account_id);
+  } catch (err) {
+    // Non-fatal — log + advance. A bad/foreign/inactive queue_id must
+    // never strand the customer mid-flow.
+    await logEvent(db, run.id, "error", node.node_key, {
+      reason: "assign_queue_failed",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
@@ -739,6 +801,12 @@ async function advanceFromNodeKey(
       currentKey = cfg.next_node_key;
       continue;
     }
+    if (node.node_type === "assign_queue") {
+      const cfg = node.config as unknown as AssignQueueNodeConfig;
+      await executeAssignQueue(db, run, node);
+      currentKey = cfg.next_node_key;
+      continue;
+    }
     if (node.node_type === "send_buttons") {
       await sendButtonsAndSuspend(db, run, node);
       // Persist the new current_node_key via optimistic UPDATE.
@@ -884,6 +952,8 @@ export async function dispatchInboundToFlows(
       input.accountId,
       input.message,
       input.isFirstInboundMessage,
+      input.queueId,
+      input.assignedAgentId,
     );
     if (!flow || !flow.entry_node_id) {
       return { consumed: false, outcome: "no_match" };

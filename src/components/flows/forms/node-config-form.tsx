@@ -195,6 +195,17 @@ export function NodeConfigForm({
         />
       );
 
+    case "assign_queue":
+      return (
+        <AssignQueueForm
+          cfg={cfg as AssignQueueCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
     case "handoff":
       return (
         <TextRow
@@ -860,6 +871,107 @@ function useUserTags(): UserTag[] {
     };
   }, []);
   return tags;
+}
+
+// ============================================================
+// assign_queue
+// ============================================================
+
+interface AssignQueueCfg {
+  queue_id?: string;
+  next_node_key?: string;
+}
+
+interface AccountQueue {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
+
+/**
+ * Setores (queues) ativas da própria account do Flow. GET /api/queues
+ * já é RLS-escopado ao chamador (queues_select) — nunca retorna de
+ * outra account; o servidor (engine.ts's executeAssignQueue) ainda
+ * revalida account_id + is_active de novo em tempo de execução, então
+ * este picker é só conveniência de autoria, nunca a fonte de verdade.
+ * A API não filtra is_active hoje, então filtramos no client. Cai
+ * para input de UUID cru se o endpoint falhar/estiver vazio, mesmo
+ * padrão de useUserTags().
+ */
+function useAccountQueues(): AccountQueue[] {
+  const [queues, setQueues] = useState<AccountQueue[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/queues").catch(() => null);
+        if (!res || !res.ok) return;
+        const json = (await res.json()) as { queues?: AccountQueue[] };
+        if (!cancelled) setQueues((json.queues ?? []).filter((q) => q.is_active));
+      } catch {
+        // Queues endpoint absent/failed — caller falls back to raw input.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return queues;
+}
+
+function AssignQueueForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: AssignQueueCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const queues = useAccountQueues();
+
+  return (
+    <>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("setorLabel")}</label>
+        {queues.length > 0 ? (
+          <Select
+            value={cfg.queue_id ?? ""}
+            onValueChange={(v) => onUpdateConfig({ queue_id: v })}
+          >
+            <SelectTrigger className="bg-muted">
+              <SelectValue placeholder={t("setorPlaceholder")} />
+            </SelectTrigger>
+            <SelectContent>
+              {queues.map((q) => (
+                <SelectItem key={q.id} value={q.id}>
+                  {q.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Input
+            value={cfg.queue_id ?? ""}
+            onChange={(e) => onUpdateConfig({ queue_id: e.target.value })}
+            placeholder={t("setorUuidPlaceholder")}
+            className="bg-muted font-mono text-xs"
+          />
+        )}
+      </div>
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("thenAdvanceTo")}
+      />
+    </>
+  );
 }
 
 // ============================================================
