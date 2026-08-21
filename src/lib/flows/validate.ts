@@ -37,7 +37,7 @@ export interface ValidationIssue {
 
 interface FlowInput {
   name: string;
-  trigger_type: "keyword" | "first_inbound_message" | "manual";
+  trigger_type: "keyword" | "first_inbound_message" | "inbound_message" | "manual";
   trigger_config: Record<string, unknown>;
   entry_node_id: string | null;
 }
@@ -173,7 +173,8 @@ function validateTrigger(
       }
     }
   }
-  // first_inbound_message / manual have no config; nothing to validate.
+  // first_inbound_message / inbound_message / manual have no config;
+  // nothing to validate.
 
   return issues;
 }
@@ -735,6 +736,110 @@ function validateNode(
       break;
     }
 
+    case "queue_menu": {
+      const cfg = node.config as {
+        menu_text?: string;
+        options?: Array<{ value?: string; queue_id?: string; label?: string }>;
+        invalid_text?: string;
+        max_attempts?: number;
+        fallback_queue_id?: string;
+        next_node_key?: string;
+      };
+      if (!cfg.menu_text?.trim()) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "menu_text",
+          message: "Queue-menu needs a message to send the customer.",
+        });
+      }
+      const options = cfg.options ?? [];
+      if (options.length === 0) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "options",
+          message: "Queue-menu needs at least one option.",
+        });
+      }
+      const seenValues = new Set<string>();
+      options.forEach((opt, i) => {
+        const value = opt.value?.trim();
+        if (!value) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: `options.${i}.value`,
+            message: "Queue-menu option needs a value the customer can type.",
+          });
+        } else if (seenValues.has(value)) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: `options.${i}.value`,
+            message: `Queue-menu has more than one option with value "${value}".`,
+          });
+        } else {
+          seenValues.add(value);
+        }
+        if (!opt.queue_id) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: `options.${i}.queue_id`,
+            message: "Queue-menu option needs a setor to route to.",
+          });
+        }
+      });
+      if (!cfg.invalid_text?.trim()) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "invalid_text",
+          message: "Queue-menu needs a message for an unrecognized reply.",
+        });
+      }
+      if (!cfg.max_attempts || cfg.max_attempts < 1) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "max_attempts",
+          message: "Queue-menu needs at least 1 attempt allowed.",
+        });
+      }
+      // fallback_queue_id is optional by design (item 6/G) — validated
+      // only for existence when actually set, same "must resolve"
+      // treatment as any other node reference. Its is_active/tenancy
+      // status can only be confirmed server-side at run time (the
+      // engine's resolveAndAssignQueue re-check) — this save-time
+      // validator doesn't have DB access.
+      if (!cfg.next_node_key) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: "Queue-menu must point to a next node.",
+        });
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: `Queue-menu points to non-existent node "${cfg.next_node_key}".`,
+        });
+      }
+      break;
+    }
+
     case "handoff":
     case "end":
       // Terminal nodes have no outgoing edges; nothing to validate
@@ -786,7 +891,8 @@ function outgoingEdges(node: NodeInput): string[] {
     case "send_media":
     case "collect_input":
     case "set_tag":
-    case "assign_queue": {
+    case "assign_queue":
+    case "queue_menu": {
       const cfg = node.config as { next_node_key?: string };
       return cfg.next_node_key ? [cfg.next_node_key] : [];
     }

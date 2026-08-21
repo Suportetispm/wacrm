@@ -70,6 +70,31 @@ describe("deriveCanvasEdges — single-outgoing node types", () => {
     ]);
   });
 
+  it("derives a `next` edge from queue_menu", () => {
+    const edges = deriveCanvasEdges(
+      nodes(
+        {
+          node_key: "qm",
+          node_type: "queue_menu",
+          config: {
+            menu_text: "1 Financeiro / 2 TI",
+            options: [{ value: "1", queue_id: "q-fin", label: "Financeiro" }],
+            invalid_text: "Opção inválida.",
+            max_attempts: 3,
+            next_node_key: "e",
+          },
+        },
+        { node_key: "e", node_type: "end", config: {} },
+      ),
+    );
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      source: "qm",
+      target: "e",
+      sourceHandle: "next",
+    });
+  });
+
   it("skips dangling edges (next_node_key pointing nowhere)", () => {
     const edges = deriveCanvasEdges(
       nodes({
@@ -310,6 +335,9 @@ describe("outgoingSlots", () => {
     expect(each({ node_key: "x", node_type: "set_tag", config: {} })).toEqual([
       "next",
     ]);
+    expect(
+      each({ node_key: "x", node_type: "queue_menu", config: {} }),
+    ).toEqual(["next"]);
   });
 
   it("returns true/false slots for condition", () => {

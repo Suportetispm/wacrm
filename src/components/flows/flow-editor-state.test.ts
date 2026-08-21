@@ -91,6 +91,7 @@ describe("defaultConfigFor", () => {
     "condition",
     "set_tag",
     "assign_queue",
+    "queue_menu",
     "handoff",
     "end",
   ];
@@ -99,6 +100,16 @@ describe("defaultConfigFor", () => {
     for (const t of types) {
       expect(typeof defaultConfigFor(t)).toBe("object");
     }
+  });
+
+  it("queue_menu default has at least one option row and a positive max_attempts", () => {
+    const cfg = defaultConfigFor("queue_menu") as {
+      options?: Array<{ value: string; queue_id: string; label: string }>;
+      max_attempts?: number;
+    };
+    expect(cfg.options?.length).toBeGreaterThan(0);
+    expect(cfg.options?.[0].value).toBeTruthy();
+    expect(cfg.max_attempts).toBeGreaterThan(0);
   });
 
   it("send_buttons default has at least one button row", () => {

@@ -53,6 +53,7 @@ import {
   type FlowRow,
   type FlowRunRow,
   type ParsedInbound,
+  type QueueMenuNodeConfig,
   type SendButtonsNodeConfig,
   type SendListNodeConfig,
   type SendMediaNodeConfig,
@@ -130,7 +131,8 @@ export function isSuspending(node_type: string): boolean {
   return (
     node_type === "send_buttons" ||
     node_type === "send_list" ||
-    node_type === "collect_input"
+    node_type === "collect_input" ||
+    node_type === "queue_menu"
   );
 }
 
@@ -337,11 +339,14 @@ async function findEntryFlow(
   if (error || !flows) return null;
 
   // A conversation already routed to a setor, or already assigned to
-  // an agent, must never re-enter a first_inbound_message-triggered
-  // flow (e.g. a triage menu) — even if this happens to be the first
-  // *customer* message the engine has seen for it (a proactively
-  // agent-created conversation, for instance). Lives here, once, for
-  // every provider — never per-account/per-flow hardcoding.
+  // an agent, must never re-enter a triage flow — whether triggered by
+  // first_inbound_message OR inbound_message (e.g. a triage menu) —
+  // even if this happens to be the first *customer* message the engine
+  // has seen for it (a proactively agent-created conversation, for
+  // instance). Lives here, once, for every provider AND every trigger
+  // type that starts from triage — never per-account/per-flow
+  // hardcoding. Never clears queue_id/assigned_agent_id itself — this
+  // is a read-only gate.
   const alreadyRouted = Boolean(queueId) || Boolean(assignedAgentId);
 
   const typed = flows as FlowRow[];
@@ -354,6 +359,15 @@ async function findEntryFlow(
         return flow;
       }
     } else if (flow.trigger_type === "first_inbound_message" && isFirstInbound && !alreadyRouted) {
+      return flow;
+    } else if (flow.trigger_type === "inbound_message" && !alreadyRouted) {
+      // Same "not yet routed" gate as first_inbound_message, minus the
+      // isFirstInbound requirement — fires for ANY inbound text on an
+      // unrouted conversation, new contact or returning one alike. No
+      // separate priority system: flows are still walked in the same
+      // `created_at ASC` order as every other trigger_type here — the
+      // oldest eligible flow wins, same rule as keyword vs
+      // first_inbound_message overlaps today.
       return flow;
     }
     // 'manual' triggers do not auto-start from inbound messages.
@@ -470,15 +484,67 @@ async function executeHandoff(
 }
 
 /**
- * Routes the run's conversation to a setor (queue). `run.account_id`/
- * `run.conversation_id` are the run's own state — `node.config` is
- * never trusted for tenancy (Flows execute via service_role, which
- * bypasses RLS entirely, so `queue_id` in a node's config is only a
- * hint the builder wrote — it must be re-verified here before use,
- * same requirement as `runAutomationsForTrigger`'s contact ownership
- * check in `src/lib/automations/engine.ts`). Never touches
- * `assigned_agent_id`. Non-fatal on any validation/write failure —
- * mirrors `set_tag`'s "don't strand the customer mid-flow" contract.
+ * Re-validates a candidate queue_id against the run's own account
+ * (never trusts `node.config` — Flows execute via service_role, which
+ * bypasses RLS entirely, so a config value is only a hint the builder
+ * wrote) and, when it checks out, writes it onto
+ * `conversations.queue_id`. Never touches `assigned_agent_id`.
+ *
+ * Shared by `executeAssignQueue` (the `assign_queue` node) and the
+ * `queue_menu` node's option/fallback routing — this is the ONE place
+ * the tenancy + is_active rule is enforced, so the two nodes can never
+ * drift apart on it. Returns a reason on failure so each caller can
+ * still log the same granular detail the original `assign_queue`
+ * implementation did; callers decide how to react (assign_queue logs
+ * and advances anyway — never strands the customer; queue_menu treats
+ * it as a configuration error and stops without touching conversation
+ * state, see the `queue_menu` branch in `handleReplyForActiveRun`).
+ */
+async function resolveAndAssignQueue(
+  db: AdminClient,
+  run: FlowRunRow,
+  queueId: string,
+): Promise<
+  | { status: "assigned" }
+  | {
+      status: "invalid";
+      reason:
+        | "run has no conversation_id"
+        | "queue not found"
+        | "queue belongs to a different account"
+        | "queue is not active";
+    }
+> {
+  if (!run.conversation_id) {
+    return { status: "invalid", reason: "run has no conversation_id" };
+  }
+  const { data: queue, error } = await db
+    .from("queues")
+    .select("id, account_id, is_active")
+    .eq("id", queueId)
+    .maybeSingle();
+  if (error || !queue) {
+    return { status: "invalid", reason: "queue not found" };
+  }
+  if (queue.account_id !== run.account_id) {
+    return { status: "invalid", reason: "queue belongs to a different account" };
+  }
+  if (!queue.is_active) {
+    return { status: "invalid", reason: "queue is not active" };
+  }
+  await db
+    .from("conversations")
+    .update({ queue_id: queue.id, updated_at: new Date().toISOString() })
+    .eq("id", run.conversation_id)
+    .eq("account_id", run.account_id);
+  return { status: "assigned" };
+}
+
+/**
+ * Routes the run's conversation to a setor (queue). Non-fatal on any
+ * validation/write failure — mirrors `set_tag`'s "don't strand the
+ * customer mid-flow" contract. See `resolveAndAssignQueue` for the
+ * shared tenancy re-check.
  */
 async function executeAssignQueue(
   db: AdminClient,
@@ -486,35 +552,13 @@ async function executeAssignQueue(
   node: FlowNodeRow,
 ): Promise<void> {
   const cfg = node.config as unknown as AssignQueueNodeConfig;
-  try {
-    if (!run.conversation_id) {
-      throw new Error("run has no conversation_id");
-    }
-    const { data: queue, error } = await db
-      .from("queues")
-      .select("id, account_id, is_active")
-      .eq("id", cfg.queue_id)
-      .maybeSingle();
-    if (error || !queue) {
-      throw new Error("queue not found");
-    }
-    if (queue.account_id !== run.account_id) {
-      throw new Error("queue belongs to a different account");
-    }
-    if (!queue.is_active) {
-      throw new Error("queue is not active");
-    }
-    await db
-      .from("conversations")
-      .update({ queue_id: queue.id, updated_at: new Date().toISOString() })
-      .eq("id", run.conversation_id)
-      .eq("account_id", run.account_id);
-  } catch (err) {
+  const result = await resolveAndAssignQueue(db, run, cfg.queue_id);
+  if (result.status === "invalid") {
     // Non-fatal — log + advance. A bad/foreign/inactive queue_id must
     // never strand the customer mid-flow.
     await logEvent(db, run.id, "error", node.node_key, {
       reason: "assign_queue_failed",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: result.reason,
     });
   }
 }
@@ -584,6 +628,17 @@ function interpolateVars(template: string, vars: Record<string, unknown>): strin
     const v = vars[key];
     return v === undefined || v === null ? "" : String(v);
   });
+}
+
+/**
+ * Namespaced flow_runs.vars key for a `queue_menu` node's invalid-reply
+ * counter. Colon-separated so it can never collide with (or be read
+ * back by) `{{vars.KEY}}` interpolation — that pattern only matches
+ * `[a-zA-Z0-9_]+`, the same charset collect_input's var_key input
+ * already restricts authors to.
+ */
+function queueMenuAttemptsKey(nodeKey: string): string {
+  return `__queue_menu:${nodeKey}:attempts`;
 }
 
 async function endRun(
@@ -807,6 +862,48 @@ async function advanceFromNodeKey(
       currentKey = cfg.next_node_key;
       continue;
     }
+    if (node.node_type === "queue_menu") {
+      // Send the menu once and suspend — customer's next TEXT reply
+      // wakes us up via handleReplyForActiveRun's queue_menu branch
+      // (handleQueueMenuReply). Same suspend shape as collect_input;
+      // the attempt counter is initialized here, in flow_runs.vars.
+      const cfg = node.config as unknown as QueueMenuNodeConfig;
+      try {
+        const { whatsapp_message_id } = await engineSendText({
+          accountId: run.account_id,
+          userId: run.user_id,
+          conversationId: run.conversation_id!,
+          contactId: run.contact_id!,
+          text: interpolateVars(cfg.menu_text, run.vars),
+        });
+        await logEvent(db, run.id, "message_sent", node.node_key, {
+          node_type: "queue_menu",
+          whatsapp_message_id,
+        });
+      } catch (err) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "queue_menu_prompt_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        await endRun(db, run.id, "failed", "queue_menu_prompt_failed");
+        return { outcome: "completed" };
+      }
+      const newVars = { ...run.vars, [queueMenuAttemptsKey(node.node_key)]: 0 };
+      await db.from("flow_runs").update({ vars: newVars }).eq("id", run.id);
+      run.vars = newVars;
+      const advanced = await advanceCurrentNodeKey(
+        db,
+        run.id,
+        run.current_node_key,
+        node.node_key,
+      );
+      if (!advanced) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "lost_race_during_advance",
+        });
+      }
+      return { outcome: "advanced" };
+    }
     if (node.node_type === "send_buttons") {
       await sendButtonsAndSuspend(db, run, node);
       // Persist the new current_node_key via optimistic UPDATE.
@@ -969,6 +1066,113 @@ export async function dispatchInboundToFlows(
   }
 }
 
+/**
+ * Self-contained reply handler for `queue_menu`. Normalizes with
+ * `.trim()`, looks up the matching option, and either:
+ *   - routes the conversation (via the shared `resolveAndAssignQueue`
+ *     — same tenancy/is_active re-check as `assign_queue`) and
+ *     advances to `next_node_key`;
+ *   - or, on no match, sends ONLY `invalid_text` (never re-sends
+ *     `menu_text`) and stays suspended at this same node, up to
+ *     `max_attempts`.
+ *
+ * On exhaustion: with `fallback_queue_id` configured and valid, routes
+ * there and advances — same as a normal option match. Without one,
+ * ends the run without touching conversations.queue_id,
+ * assigned_agent_id, or conversations.status (approved decision — the
+ * conversation is left without a sector, no other side effect).
+ *
+ * A queue that fails re-validation (option's own queue, or the
+ * fallback queue) is treated as a CONFIGURATION error, never as "the
+ * customer typed something wrong" — no invalid-option message is sent,
+ * no other queue is guessed, and the run ends untouched.
+ */
+async function handleQueueMenuReply(
+  db: AdminClient,
+  run: FlowRunRow,
+  node: FlowNodeRow,
+  rawText: string,
+  nodes: Map<string, FlowNodeRow>,
+): Promise<DispatchInboundResult> {
+  const cfg = node.config as unknown as QueueMenuNodeConfig;
+  const reply = rawText.trim();
+  const option = cfg.options.find((o) => o.value.trim() === reply);
+
+  if (option) {
+    const result = await resolveAndAssignQueue(db, run, option.queue_id);
+    if (result.status === "invalid") {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "queue_menu_option_queue_invalid",
+        detail: result.reason,
+      });
+      await endRun(db, run.id, "failed", "queue_menu_option_queue_invalid");
+      return { consumed: true, flow_run_id: run.id, outcome: "completed" };
+    }
+    const outcome = await advanceFromNodeKey(db, run, cfg.next_node_key, nodes);
+    return { consumed: true, flow_run_id: run.id, outcome: outcome.outcome };
+  }
+
+  // No option matched this reply — invalid input, not a config error.
+  const attemptsKey = queueMenuAttemptsKey(node.node_key);
+  const priorAttempts =
+    typeof run.vars[attemptsKey] === "number" ? (run.vars[attemptsKey] as number) : 0;
+  const attempts = priorAttempts + 1;
+  const newVars = { ...run.vars, [attemptsKey]: attempts };
+  await db.from("flow_runs").update({ vars: newVars }).eq("id", run.id);
+  run.vars = newVars;
+
+  if (attempts < cfg.max_attempts) {
+    try {
+      await engineSendText({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        text: interpolateVars(cfg.invalid_text, run.vars),
+      });
+    } catch (err) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "queue_menu_invalid_send_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+    await logEvent(db, run.id, "fallback_fired", node.node_key, {
+      action: "reprompt",
+      attempts,
+    });
+    return { consumed: true, flow_run_id: run.id, outcome: "fallback_fired" };
+  }
+
+  // Attempts exhausted.
+  if (cfg.fallback_queue_id) {
+    const result = await resolveAndAssignQueue(db, run, cfg.fallback_queue_id);
+    if (result.status === "assigned") {
+      const outcome = await advanceFromNodeKey(db, run, cfg.next_node_key, nodes);
+      return { consumed: true, flow_run_id: run.id, outcome: outcome.outcome };
+    }
+    // The configured fallback itself is invalid — same "configuration
+    // error, never guess, never touch state" contract as an invalid
+    // option queue.
+    await logEvent(db, run.id, "error", node.node_key, {
+      reason: "queue_menu_fallback_queue_invalid",
+      detail: result.reason,
+    });
+    await endRun(db, run.id, "failed", "queue_menu_fallback_queue_invalid");
+    return { consumed: true, flow_run_id: run.id, outcome: "completed" };
+  }
+
+  // No fallback configured (approved behavior): end the flow normally,
+  // no side effects. conversations.queue_id, assigned_agent_id, and
+  // conversations.status are all left exactly as they were — the
+  // conversation simply stays without a sector.
+  await logEvent(db, run.id, "fallback_fired", node.node_key, {
+    action: "end_no_fallback",
+    attempts,
+  });
+  await endRun(db, run.id, "completed", "queue_menu_exhausted_no_fallback");
+  return { consumed: true, flow_run_id: run.id, outcome: "completed" };
+}
+
 async function handleReplyForActiveRun(
   db: AdminClient,
   run: FlowRunRow,
@@ -1004,6 +1208,17 @@ async function handleReplyForActiveRun(
   if (!currentNode) {
     await endRun(db, run.id, "failed", "current_node_not_found");
     return { consumed: true, flow_run_id: run.id, outcome: "no_match" };
+  }
+
+  // queue_menu owns its own attempt counter, invalid-reply message, and
+  // fallback queue — deliberately self-contained rather than routed
+  // through the generic reprompt_count/fallback_policy machinery below
+  // (that mechanism is flow-level and shared across every other node
+  // type; queue_menu's knobs are per-node config, see types.ts). Still
+  // the SAME flow_runs state machine — this is one more branch in it,
+  // not a second engine.
+  if (message.kind === "text" && currentNode.node_type === "queue_menu") {
+    return handleQueueMenuReply(db, run, currentNode, message.text, nodes);
   }
 
   // Two ways a reply can advance:

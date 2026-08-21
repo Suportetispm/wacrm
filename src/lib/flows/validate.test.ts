@@ -420,6 +420,152 @@ describe("validateFlowForActivation — nodes", () => {
   });
 });
 
+describe("validateFlowForActivation — queue_menu", () => {
+  const baseFlow = { ...validFlow, entry_node_id: "s" };
+  const validOptions = [
+    { value: "1", queue_id: "q-fin", label: "Financeiro" },
+    { value: "2", queue_id: "q-ti", label: "Suporte TI" },
+  ];
+  const nodesWith = (menuConfig: Record<string, unknown>) => [
+    { node_key: "s", node_type: "start", config: { next_node_key: "m" } },
+    {
+      node_key: "m",
+      node_type: "queue_menu",
+      config: {
+        menu_text: "1 Financeiro / 2 TI",
+        options: validOptions,
+        invalid_text: "Opção inválida.",
+        max_attempts: 3,
+        next_node_key: "h",
+        ...menuConfig,
+      },
+    },
+    { node_key: "h", node_type: "handoff", config: {} },
+  ];
+
+  it("passes with a fully-configured menu — no node-scoped issues", () => {
+    const issues = validateFlowForActivation(baseFlow, nodesWith({}));
+    expect(issues.filter((i) => i.node_key === "m")).toHaveLength(0);
+  });
+
+  it("flags an empty menu_text", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ menu_text: "  " }),
+    );
+    expect(
+      issues.some((i) => i.node_key === "m" && i.field === "menu_text"),
+    ).toBe(true);
+  });
+
+  it("flags zero options", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ options: [] }),
+    );
+    expect(
+      issues.some(
+        (i) =>
+          i.node_key === "m" &&
+          i.field === "options" &&
+          i.message.includes("at least one"),
+      ),
+    ).toBe(true);
+  });
+
+  it("flags an option with an empty value", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({
+        options: [{ value: " ", queue_id: "q-fin", label: "Financeiro" }],
+      }),
+    );
+    expect(
+      issues.some((i) => i.node_key === "m" && i.field === "options.0.value"),
+    ).toBe(true);
+  });
+
+  it("flags duplicate option values", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({
+        options: [
+          { value: "1", queue_id: "q-fin", label: "Financeiro" },
+          { value: "1", queue_id: "q-ti", label: "Suporte TI" },
+        ],
+      }),
+    );
+    expect(
+      issues.some(
+        (i) =>
+          i.node_key === "m" &&
+          i.field === "options.1.value" &&
+          i.message.includes("more than one"),
+      ),
+    ).toBe(true);
+  });
+
+  it("flags an option missing queue_id", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ options: [{ value: "1", label: "Financeiro" }] }),
+    );
+    expect(
+      issues.some((i) => i.node_key === "m" && i.field === "options.0.queue_id"),
+    ).toBe(true);
+  });
+
+  it("flags an empty invalid_text", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ invalid_text: "" }),
+    );
+    expect(
+      issues.some((i) => i.node_key === "m" && i.field === "invalid_text"),
+    ).toBe(true);
+  });
+
+  it("flags max_attempts < 1", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ max_attempts: 0 }),
+    );
+    expect(
+      issues.some((i) => i.node_key === "m" && i.field === "max_attempts"),
+    ).toBe(true);
+  });
+
+  it("flags a missing next_node_key", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ next_node_key: "" }),
+    );
+    expect(
+      issues.some((i) => i.node_key === "m" && i.field === "next_node_key"),
+    ).toBe(true);
+  });
+
+  it("flags a next_node_key pointing to a non-existent node", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ next_node_key: "ghost" }),
+    );
+    expect(
+      issues.some(
+        (i) =>
+          i.node_key === "m" &&
+          i.field === "next_node_key" &&
+          i.message.includes("non-existent"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does NOT require fallback_queue_id — it's optional by design", () => {
+    const issues = validateFlowForActivation(baseFlow, nodesWith({}));
+    expect(issues.some((i) => i.field === "fallback_queue_id")).toBe(false);
+  });
+});
+
 describe("validateFlowForActivation — send_media", () => {
   const baseFlow = { ...validFlow, entry_node_id: "s" };
   const nodesWith = (mediaConfig: Record<string, unknown>) => [

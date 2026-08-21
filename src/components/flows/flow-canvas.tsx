@@ -701,6 +701,7 @@ const ADD_NODE_TYPES: NodeType[] = [
   'condition',
   'set_tag',
   'assign_queue',
+  'queue_menu',
   'handoff',
   'end',
 ];

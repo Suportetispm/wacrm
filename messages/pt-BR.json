@@ -1331,6 +1331,7 @@
       "triggerKeywordNone": "Aciona por palavra-chave (nenhuma definida)",
       "triggerKeyword": "Aciona em: {keywords}",
       "triggerFirstInbound": "Aciona na primeira mensagem recebida de um contato",
+      "triggerInboundMessage": "Aciona em qualquer mensagem recebida (enquanto a conversa não tiver setor)",
       "triggerManual": "Acionamento manual"
     },
     "edit": {
@@ -1362,6 +1363,8 @@
       "whenLabel": "Quando…",
       "triggerKeywordTitle": "Uma mensagem contém uma palavra-chave",
       "triggerFirstInboundTitle": "Primeira mensagem recebida do cliente",
+      "triggerInboundMessageTitle": "Qualquer mensagem recebida",
+      "triggerInboundMessageHint": "Inicia quando uma mensagem é recebida em uma conversa que ainda não foi direcionada para um setor.",
       "triggerManualTitle": "Somente manual (sem acionamento automático)",
       "keywordsLabel": "Palavras-chave (separadas por vírgula)",
       "keywordsPlaceholder": "suporte, ajuda, oi",
@@ -1443,7 +1446,14 @@
         "filenamePlaceholder": "fatura.pdf",
         "advanceAfterSending": "Após enviar, avançar para",
         "pickNextNode": "Escolha o próximo nó…",
-        "none": "— Nenhum —"
+        "none": "— Nenhum —",
+        "queueMenuMenuTextLabel": "Mensagem do menu",
+        "queueMenuOptionsLabel": "Opções",
+        "queueMenuAddOption": "Adicionar opção",
+        "queueMenuValuePlaceholder": "Ex: 1",
+        "queueMenuInvalidTextLabel": "Mensagem para opção inválida",
+        "queueMenuMaxAttemptsLabel": "Máximo de tentativas",
+        "queueMenuFallbackLabel": "Setor de fallback (opcional)"
       },
       "categories": {
         "messaging": "Mensagens",
@@ -1486,6 +1496,10 @@
         "assign_queue": {
           "label": "Encaminhar para setor",
           "blurb": "Direciona a conversa para um setor"
+        },
+        "queue_menu": {
+          "label": "Menu de setores",
+          "blurb": "Envia um menu e roteia para um setor pela resposta"
         },
         "handoff": {
           "label": "Transferir para atendente",

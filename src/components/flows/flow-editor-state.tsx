@@ -61,7 +61,7 @@ import { NODE_META, slugify, type BuilderNode, type NodeType } from "./shared";
 export interface BuilderState {
   name: string;
   description: string;
-  trigger_type: "keyword" | "first_inbound_message" | "manual";
+  trigger_type: "keyword" | "first_inbound_message" | "inbound_message" | "manual";
   trigger_config: Record<string, unknown>;
   entry_node_id: string | null;
   status: FlowRow["status"];
@@ -185,6 +185,14 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
       return { mode: "add", tag_id: "", next_node_key: "" };
     case "assign_queue":
       return { queue_id: "", next_node_key: "" };
+    case "queue_menu":
+      return {
+        menu_text: "",
+        options: [{ value: "1", queue_id: "", label: "" }],
+        invalid_text: "",
+        max_attempts: 3,
+        next_node_key: "",
+      };
     case "handoff":
       return { note: "" };
     case "end":

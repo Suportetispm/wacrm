@@ -206,6 +206,17 @@ export function NodeConfigForm({
         />
       );
 
+    case "queue_menu":
+      return (
+        <QueueMenuForm
+          cfg={cfg as QueueMenuCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
     case "handoff":
       return (
         <TextRow
@@ -940,8 +951,9 @@ function AssignQueueForm({
         <label className="mb-1 block text-xs text-muted-foreground">{t("setorLabel")}</label>
         {queues.length > 0 ? (
           <Select
+            items={buildQueueSelectItems(queues)}
             value={cfg.queue_id ?? ""}
-            onValueChange={(v) => onUpdateConfig({ queue_id: v })}
+            onValueChange={(v) => onUpdateConfig({ queue_id: v ?? "" })}
           >
             <SelectTrigger className="bg-muted">
               <SelectValue placeholder={t("setorPlaceholder")} />
@@ -963,6 +975,244 @@ function AssignQueueForm({
           />
         )}
       </div>
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("thenAdvanceTo")}
+      />
+    </>
+  );
+}
+
+// ============================================================
+// queue_menu
+// ============================================================
+
+interface QueueMenuOptionCfg {
+  value?: string;
+  queue_id?: string;
+  label?: string;
+}
+
+interface QueueMenuCfg {
+  menu_text?: string;
+  options?: QueueMenuOptionCfg[];
+  invalid_text?: string;
+  max_attempts?: number;
+  fallback_queue_id?: string;
+  fallback_queue_label?: string;
+  next_node_key?: string;
+}
+
+/**
+ * Builds the `items` list base-ui's `<Select.Value>` needs to resolve
+ * a selected `queue_id` back to its display name in the CLOSED
+ * trigger. This is not optional decoration: base-ui only reads a
+ * selected item's label from `<Select.Root items={...}>` — never from
+ * the rendered `<SelectItem>` children — so without this, the trigger
+ * shows the raw queue_id (a UUID) once a selection is made, even
+ * though the open dropdown list renders `q.name` correctly (see
+ * node_modules/@base-ui/react/internals/resolveValueLabel.js —
+ * `resolveSelectedLabel()` falls back to serializing the raw value
+ * when `items` is unset). Pure/exported so `value` vs `label` here
+ * stays unit-testable without a component-render harness (this repo
+ * has none for React components — see node-config-form.test.ts).
+ */
+export function buildQueueSelectItems(
+  queues: Array<{ id: string; name: string }>,
+): Array<{ value: string; label: string }> {
+  return queues.map((q) => ({ value: q.id, label: q.name }));
+}
+
+/**
+ * The `{queue_id, label}` patch to persist when a queue is picked in
+ * either QueueMenuForm select (a per-option row or the fallback
+ * picker). `queue_id` is the only field the engine trusts — it
+ * re-validates tenancy/is_active at runtime regardless (see
+ * `resolveAndAssignQueue` in engine.ts). `label` is display-only,
+ * captured here so summarizeNode/canvas never need to show a UUID.
+ */
+export function resolveQueueSelection(
+  queues: Array<{ id: string; name: string }>,
+  selectedId: string,
+): { queue_id: string; label: string } {
+  const queue = queues.find((q) => q.id === selectedId);
+  return { queue_id: selectedId, label: queue?.name ?? "" };
+}
+
+/**
+ * Same account-scoped, active-only queue picker `AssignQueueForm`
+ * already uses (`useAccountQueues()` above) — reused here for both the
+ * per-option Select and the fallback Select so this form never offers
+ * a queue the engine's own `resolveAndAssignQueue` re-check
+ * (engine.ts) would reject. The engine re-validates regardless; this
+ * is authoring convenience only, same disclaimer as AssignQueueForm's.
+ */
+function QueueMenuForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: QueueMenuCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const queues = useAccountQueues();
+  const options = cfg.options ?? [];
+  const queueSelectItems = buildQueueSelectItems(queues);
+
+  const updateOption = (idx: number, patch: Partial<QueueMenuOptionCfg>) =>
+    onUpdateConfig({
+      options: options.map((o, i) => (i === idx ? { ...o, ...patch } : o)),
+    });
+  const addOption = () =>
+    onUpdateConfig({
+      options: [
+        ...options,
+        { value: String(options.length + 1), queue_id: "", label: "" },
+      ],
+    });
+  const removeOption = (idx: number) =>
+    onUpdateConfig({ options: options.filter((_, i) => i !== idx) });
+
+  return (
+    <>
+      <TextRow
+        label={t("queueMenuMenuTextLabel")}
+        value={cfg.menu_text ?? ""}
+        onChange={(v) => onUpdateConfig({ menu_text: v })}
+        rows={3}
+      />
+
+      <div>
+        <label className="mb-2 block text-xs text-muted-foreground">
+          {t("queueMenuOptionsLabel")}
+        </label>
+        <div className="flex flex-col gap-3">
+          {options.map((opt, i) => (
+            <div
+              key={i}
+              className="grid grid-cols-1 gap-2 rounded-md border border-border bg-muted/40 p-3 md:grid-cols-[1fr_2fr_auto]"
+            >
+              <Input
+                value={opt.value ?? ""}
+                onChange={(e) => updateOption(i, { value: e.target.value })}
+                placeholder={t("queueMenuValuePlaceholder")}
+                className="bg-muted"
+              />
+              {queues.length > 0 ? (
+                <Select
+                  items={queueSelectItems}
+                  value={opt.queue_id ?? ""}
+                  onValueChange={(v) => {
+                    updateOption(i, resolveQueueSelection(queues, v ?? ""));
+                  }}
+                >
+                  <SelectTrigger className="bg-muted">
+                    <SelectValue placeholder={t("setorPlaceholder")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {queues.map((q) => (
+                      <SelectItem key={q.id} value={q.id}>
+                        {q.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  value={opt.queue_id ?? ""}
+                  onChange={(e) => updateOption(i, { queue_id: e.target.value })}
+                  placeholder={t("setorUuidPlaceholder")}
+                  className="bg-muted font-mono text-xs"
+                />
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => removeOption(i)}
+                className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+        <Button variant="ghost" size="sm" onClick={addOption} className="mt-2">
+          <Plus className="h-3.5 w-3.5" />
+          {t("queueMenuAddOption")}
+        </Button>
+      </div>
+
+      <TextRow
+        label={t("queueMenuInvalidTextLabel")}
+        value={cfg.invalid_text ?? ""}
+        onChange={(v) => onUpdateConfig({ invalid_text: v })}
+        rows={2}
+      />
+
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">
+          {t("queueMenuMaxAttemptsLabel")}
+        </label>
+        <Input
+          type="number"
+          min={1}
+          value={cfg.max_attempts ?? 3}
+          onChange={(e) =>
+            onUpdateConfig({
+              max_attempts: Math.max(1, Number(e.target.value) || 1),
+            })
+          }
+          className="bg-muted w-24"
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">
+          {t("queueMenuFallbackLabel")}
+        </label>
+        {queues.length > 0 ? (
+          <Select
+            items={[{ value: "__none__", label: t("none") }, ...queueSelectItems]}
+            value={cfg.fallback_queue_id || "__none__"}
+            onValueChange={(v) => {
+              if (v === "__none__") {
+                onUpdateConfig({ fallback_queue_id: "", fallback_queue_label: "" });
+                return;
+              }
+              const { queue_id, label } = resolveQueueSelection(queues, v ?? "");
+              onUpdateConfig({ fallback_queue_id: queue_id, fallback_queue_label: label });
+            }}
+          >
+            <SelectTrigger className="bg-muted">
+              <SelectValue placeholder={t("setorPlaceholder")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">{t("none")}</SelectItem>
+              {queues.map((q) => (
+                <SelectItem key={q.id} value={q.id}>
+                  {q.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Input
+            value={cfg.fallback_queue_id ?? ""}
+            onChange={(e) => onUpdateConfig({ fallback_queue_id: e.target.value })}
+            placeholder={t("setorUuidPlaceholder")}
+            className="bg-muted font-mono text-xs"
+          />
+        )}
+      </div>
+
       <NextNodeRow
         value={cfg.next_node_key ?? ""}
         allNodes={allNodes}

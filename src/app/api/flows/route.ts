@@ -81,7 +81,7 @@ export async function POST(request: Request) {
     | {
         name?: string
         description?: string | null
-        trigger_type?: 'keyword' | 'first_inbound_message' | 'manual'
+        trigger_type?: 'keyword' | 'first_inbound_message' | 'inbound_message' | 'manual'
         trigger_config?: Record<string, unknown>
         /**
          * If set, clone the matching template's name + trigger +

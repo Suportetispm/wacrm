@@ -189,6 +189,54 @@ export interface AssignQueueNodeConfig {
   next_node_key: string;
 }
 
+/** One typed option row in a `queue_menu` node's `options` list. */
+export interface QueueMenuOption {
+  /** What the customer must type — matched after `.trim()`. */
+  value: string;
+  /** Routed queue, re-validated at runtime (see `resolveAndAssignQueue`
+   *  in engine.ts) — never trusted at face value, same reasoning as
+   *  `AssignQueueNodeConfig.queue_id`. */
+  queue_id: string;
+  /** Queue name captured at authoring time (from the same account-scoped
+   *  picker `assign_queue`'s form already uses). Display-only — lets
+   *  the canvas/list card and summarizeNode show "Financeiro" instead
+   *  of a raw UUID, without an async lookup. Never used for tenancy. */
+  label: string;
+}
+
+/**
+ * High-level "triage by menu" shortcut node — bundles what would
+ * otherwise be collect_input + N condition nodes + assign_queue into
+ * one node the builder can add as a single step. Reuses the SAME
+ * flow_runs state machine as every other suspending node (current_node_key
+ * + status='active'); this is not a second engine. See
+ * `resolveAndAssignQueue` in engine.ts for the tenancy re-check shared
+ * with `assign_queue`.
+ *
+ * Attempt counter lives in `flow_runs.vars` under an internal,
+ * node_key-namespaced key (`__queue_menu:<node_key>:attempts`) — no new
+ * column, same rule as every other node's captured state.
+ */
+export interface QueueMenuNodeConfig {
+  /** Initial menu message, sent exactly once per node entry. */
+  menu_text: string;
+  options: QueueMenuOption[];
+  /** Sent when a reply doesn't match any option's `value`. Never
+   *  re-sends `menu_text`. */
+  invalid_text: string;
+  /** Invalid replies allowed before falling back. Default 3. */
+  max_attempts: number;
+  /** Optional queue routed to once max_attempts is exhausted. */
+  fallback_queue_id?: string;
+  /** Display-only name for `fallback_queue_id`, same convention as
+   *  QueueMenuOption.label. */
+  fallback_queue_label?: string;
+  /** Node to advance to once a sector is resolved (valid option match,
+   *  or fallback assignment). Single outgoing edge, same shape as
+   *  collect_input/set_tag/assign_queue. */
+  next_node_key: string;
+}
+
 // Terminal nodes carry no config — they just stop the run.
 export type EndNodeConfig = Record<string, never>;
 
@@ -210,6 +258,7 @@ export type FlowNodeConfig =
   | { node_type: "condition"; config: ConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
   | { node_type: "assign_queue"; config: AssignQueueNodeConfig }
+  | { node_type: "queue_menu"; config: QueueMenuNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
   | { node_type: "end"; config: EndNodeConfig };
 
@@ -231,9 +280,15 @@ export interface KeywordTriggerConfig {
 // the no-empty-object-type lint rule.
 export type FirstInboundTriggerConfig = Record<string, never>;
 
+// Same shape as FirstInboundTriggerConfig (no knobs) — kept as its own
+// alias rather than reused so the two trigger types can diverge later
+// without a misleading name.
+export type InboundMessageTriggerConfig = Record<string, never>;
+
 export type FlowTriggerConfig =
   | { trigger_type: "keyword"; config: KeywordTriggerConfig }
   | { trigger_type: "first_inbound_message"; config: FirstInboundTriggerConfig }
+  | { trigger_type: "inbound_message"; config: InboundMessageTriggerConfig }
   | { trigger_type: "manual"; config: Record<string, never> };
 
 // ============================================================
@@ -251,8 +306,12 @@ export interface FlowRow {
   name: string;
   description: string | null;
   status: "draft" | "active" | "archived";
-  trigger_type: "keyword" | "first_inbound_message" | "manual";
-  trigger_config: KeywordTriggerConfig | FirstInboundTriggerConfig | Record<string, unknown>;
+  trigger_type: "keyword" | "first_inbound_message" | "inbound_message" | "manual";
+  trigger_config:
+    | KeywordTriggerConfig
+    | FirstInboundTriggerConfig
+    | InboundMessageTriggerConfig
+    | Record<string, unknown>;
   entry_node_id: string | null;
   fallback_policy: FlowFallbackPolicy;
   execution_count: number;

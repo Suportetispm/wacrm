@@ -261,6 +261,30 @@ function KeywordsInput({
 // Trigger panel
 // ============================================================
 
+/**
+ * base-ui's `<Select.Value>` (the closed trigger's displayed text)
+ * only resolves a selected item's label from an `items` list passed
+ * to `<Select.Root>` — never from the rendered `<SelectItem>`
+ * children. Without this, the trigger showed the raw technical
+ * trigger_type string ("first_inbound_message", "inbound_message",
+ * ...) instead of its translated label — same root cause as the queue
+ * pickers in node-config-form.tsx (see `buildQueueSelectItems` there
+ * for the fuller explanation / the base-ui source reference). Pure/
+ * exported so `value` (the technical trigger_type) vs `label` (the
+ * translated title) stays unit-testable without a component-render
+ * harness (this repo has none for React components).
+ */
+export function buildTriggerSelectItems(
+  t: (key: string) => string,
+): Array<{ value: string; label: string }> {
+  return [
+    { value: 'keyword', label: t('triggerKeywordTitle') },
+    { value: 'first_inbound_message', label: t('triggerFirstInboundTitle') },
+    { value: 'inbound_message', label: t('triggerInboundMessageTitle') },
+    { value: 'manual', label: t('triggerManualTitle') },
+  ];
+}
+
 function TriggerPanel({
   state,
   setState,
@@ -272,6 +296,8 @@ function TriggerPanel({
   triggerIssues: ValidationIssue[];
   t: ReturnType<typeof useTranslations>;
 }) {
+  const triggerSelectItems = buildTriggerSelectItems(t);
+
   return (
     <section className="border-border bg-card rounded-lg border p-4">
       <h2 className="text-foreground mb-3 text-sm font-semibold">{t('triggerTitle')}</h2>
@@ -281,6 +307,7 @@ function TriggerPanel({
             {t('whenLabel')}
           </label>
           <Select
+            items={triggerSelectItems}
             value={state.trigger_type}
             onValueChange={(v) =>
               setState((s) => ({
@@ -300,6 +327,9 @@ function TriggerPanel({
               </SelectItem>
               <SelectItem value="first_inbound_message">
                 {t('triggerFirstInboundTitle')}
+              </SelectItem>
+              <SelectItem value="inbound_message">
+                {t('triggerInboundMessageTitle')}
               </SelectItem>
               <SelectItem value="manual">
                 {t('triggerManualTitle')}
@@ -327,6 +357,11 @@ function TriggerPanel({
               t={t}
             />
           </div>
+        )}
+        {state.trigger_type === 'inbound_message' && (
+          <p className="text-muted-foreground self-end text-xs">
+            {t('triggerInboundMessageHint')}
+          </p>
         )}
       </div>
       {triggerIssues.length > 0 && (
@@ -590,6 +625,7 @@ function AddNodeButton({ onAdd, t }: { onAdd: (type: NodeType) => void; t: Retur
     'condition',
     'set_tag',
     'assign_queue',
+    'queue_menu',
     'handoff',
     'end',
   ];

@@ -51,6 +51,7 @@ export type NodeType =
   | 'condition'
   | 'set_tag'
   | 'assign_queue'
+  | 'queue_menu'
   | 'handoff'
   | 'end';
 
@@ -161,6 +162,13 @@ export const NODE_META: Record<
     blurb: 'Routes the conversation to a setor (queue)',
     category: 'flow',
   },
+  queue_menu: {
+    label: 'Menu de setores',
+    icon: Workflow,
+    color: 'text-orange-300',
+    blurb: 'Asks a menu question, routes to a setor by reply',
+    category: 'flow',
+  },
   handoff: {
     label: 'Handoff to agent',
     icon: UserPlus,
@@ -215,6 +223,7 @@ const NODE_HUE: Record<NodeType, { l: number; c: number; h: number }> = {
   condition: { l: 0.72, c: 0.15, h: 65 }, // amber — a fork in the road
   set_tag: { l: 0.65, c: 0.15, h: 350 }, // pink
   assign_queue: { l: 0.68, c: 0.16, h: 45 }, // orange — routes to a setor
+  queue_menu: { l: 0.72, c: 0.13, h: 55 }, // amber-orange — menu that routes to a setor
   handoff: { l: 0.65, c: 0.17, h: 16 }, // rose — hands off
   end: { l: 0.55, c: 0.01, h: 260 }, // neutral grey — terminal
 };
@@ -437,6 +446,22 @@ export function summarizeNode(
       return queueId
         ? t ? t('queuePicked', { queue: queueId.slice(0, 8) }) : `Sector ${queueId.slice(0, 8)}…`
         : t ? t('queueNone') : 'Sector (none picked)';
+    }
+    case 'queue_menu': {
+      const options = Array.isArray(cfg.options)
+        ? (cfg.options as Array<Record<string, unknown>>)
+        : [];
+      const labels = options
+        .map((o) => (typeof o.label === 'string' ? o.label : ''))
+        .filter(Boolean);
+      // Never a UUID — options carry a display `label` captured at
+      // authoring time specifically so this never needs one (unlike
+      // assign_queue/set_tag above, which fall back to a raw id
+      // prefix because they don't store one).
+      if (labels.length === 0) return null;
+      return labels.length === options.length
+        ? truncate(labels.join(', '), 70)
+        : (t ? t('options', { count: options.length }) : `${options.length} option${options.length === 1 ? '' : 's'}`);
     }
     case 'handoff': {
       const note = typeof cfg.note === 'string' ? cfg.note : '';

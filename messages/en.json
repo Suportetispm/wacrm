@@ -1331,6 +1331,7 @@
       "triggerKeywordNone": "Triggers on keyword (none set)",
       "triggerKeyword": "Triggers on: {keywords}",
       "triggerFirstInbound": "Triggers on a contact's first-ever inbound message",
+      "triggerInboundMessage": "Triggers on any inbound message (while the conversation has no setor)",
       "triggerManual": "Manual trigger"
     },
     "edit": {
@@ -1362,6 +1363,8 @@
       "whenLabel": "When…",
       "triggerKeywordTitle": "A message contains a keyword",
       "triggerFirstInboundTitle": "Customer's first ever inbound message",
+      "triggerInboundMessageTitle": "Any inbound message",
+      "triggerInboundMessageHint": "Starts when a message is received on a conversation that hasn't been routed to a setor yet.",
       "triggerManualTitle": "Manual only (no auto-trigger)",
       "keywordsLabel": "Keywords (comma-separated)",
       "keywordsPlaceholder": "support, help, hi",
@@ -1443,7 +1446,14 @@
         "filenamePlaceholder": "invoice.pdf",
         "advanceAfterSending": "After sending, advance to",
         "pickNextNode": "Pick a next node…",
-        "none": "— None —"
+        "none": "— None —",
+        "queueMenuMenuTextLabel": "Menu message",
+        "queueMenuOptionsLabel": "Options",
+        "queueMenuAddOption": "Add option",
+        "queueMenuValuePlaceholder": "e.g. 1",
+        "queueMenuInvalidTextLabel": "Message for an invalid option",
+        "queueMenuMaxAttemptsLabel": "Max attempts",
+        "queueMenuFallbackLabel": "Fallback sector (optional)"
       },
       "categories": {
         "messaging": "Messaging",
@@ -1486,6 +1496,10 @@
         "assign_queue": {
           "label": "Route to sector",
           "blurb": "Routes the conversation to a sector"
+        },
+        "queue_menu": {
+          "label": "Sector menu",
+          "blurb": "Sends a menu and routes to a sector by reply"
         },
         "handoff": {
           "label": "Handoff to agent",

@@ -48,7 +48,14 @@ export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
       case "send_message":
       case "send_media":
       case "collect_input":
-      case "set_tag": {
+      case "set_tag":
+      case "queue_menu": {
+        // NOTE: `assign_queue` is deliberately NOT added to this list —
+        // it was already absent before this change (a pre-existing gap:
+        // its outgoing edge never rendered on canvas even though
+        // outgoingSlots()/applyEdgeConnection() below both support it).
+        // Out of scope here — fixing it would be a behavior change to
+        // an existing node, not something queue_menu needs.
         const next = (cfg as { next_node_key?: string }).next_node_key;
         if (next && knownKeys.has(next)) {
           edges.push({
@@ -180,6 +187,7 @@ export function outgoingSlots(node: BuilderNode): OutgoingSlot[] {
     case "collect_input":
     case "set_tag":
     case "assign_queue":
+    case "queue_menu":
       return [{ id: "next", label: "Next" }];
 
     case "condition":
@@ -255,6 +263,7 @@ export function applyEdgeConnection(
     case "collect_input":
     case "set_tag":
     case "assign_queue":
+    case "queue_menu":
       if (sourceHandle === "next") return { next_node_key: targetKey };
       return null;
 
@@ -349,7 +358,8 @@ function patchedConfigWithoutKey(
     case "send_media":
     case "collect_input":
     case "set_tag":
-    case "assign_queue": {
+    case "assign_queue":
+    case "queue_menu": {
       const next = (cfg as { next_node_key?: string }).next_node_key;
       if (next !== deletedKey) return null;
       return { ...cfg, next_node_key: "" };
