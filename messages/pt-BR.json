@@ -75,6 +75,18 @@
     "menuSettings": "Configurações",
     "menuSignOut": "Sair"
   },
+  "NotificationsPage": {
+    "title": "Notificações",
+    "subtitle": "As conversas atribuídas a você por outros membros da equipe aparecerão aqui.",
+    "markAllRead": "Marcar todas como lidas",
+    "retry": "Tentar novamente",
+    "emptyTitle": "Nenhuma notificação ainda",
+    "emptyDesc": "Você verá um alerta aqui quando alguém atribuir uma conversa a você.",
+    "unreadLabel": "Não lida",
+    "toastMarkReadFailed": "Falha ao marcar notificação como lida",
+    "toastMarkAllFailed": "Falha ao marcar todas como lidas",
+    "conversationAssignedTitle": "Nova conversa atribuída"
+  },
   "Admin": {
     "nav": {
       "title": "Superadmin",

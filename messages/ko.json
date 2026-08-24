@@ -75,6 +75,18 @@
     "menuSettings": "설정",
     "menuSignOut": "로그아웃"
   },
+  "NotificationsPage": {
+    "title": "알림",
+    "subtitle": "다른 팀원이 회원님에게 배정한 대화가 여기에 표시됩니다.",
+    "markAllRead": "모두 읽음으로 표시",
+    "retry": "다시 시도",
+    "emptyTitle": "아직 알림이 없습니다",
+    "emptyDesc": "누군가 대화를 배정하면 여기에 알림이 표시됩니다.",
+    "unreadLabel": "읽지 않음",
+    "toastMarkReadFailed": "알림을 읽음으로 표시하지 못했습니다",
+    "toastMarkAllFailed": "모두 읽음으로 표시하지 못했습니다",
+    "conversationAssignedTitle": "새 대화가 배정되었습니다"
+  },
   "Admin": {
     "nav": {
       "title": "슈퍼관리자",
