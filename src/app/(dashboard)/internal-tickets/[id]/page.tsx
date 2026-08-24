@@ -24,7 +24,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { buildMemberSelectItems, fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { buildCatalogSelectItems } from '@/lib/internal-tickets/select-items';
 import type {
   AccountMember,
   InternalCompany,
@@ -518,7 +519,11 @@ function EditForm({
       </div>
       <div>
         <Label>{tn('typeLabel')}</Label>
-        <Select value={edit.type_id} onValueChange={(v) => setEdit({ ...edit, type_id: v ?? edit.type_id })}>
+        <Select
+          items={buildCatalogSelectItems(types)}
+          value={edit.type_id}
+          onValueChange={(v) => setEdit({ ...edit, type_id: v ?? edit.type_id })}
+        >
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
           <SelectContent>
             {types.map((x) => (
@@ -529,7 +534,11 @@ function EditForm({
       </div>
       <div>
         <Label>{tn('statusLabel')}</Label>
-        <Select value={edit.status_id} onValueChange={(v) => setEdit({ ...edit, status_id: v ?? edit.status_id })}>
+        <Select
+          items={buildCatalogSelectItems(statuses)}
+          value={edit.status_id}
+          onValueChange={(v) => setEdit({ ...edit, status_id: v ?? edit.status_id })}
+        >
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
           <SelectContent>
             {statuses.map((x) => (
@@ -541,6 +550,7 @@ function EditForm({
       <div>
         <Label>{tn('stageLabel')}</Label>
         <Select
+          items={[{ value: NONE_VALUE, label: t('none') }, ...buildCatalogSelectItems(stages)]}
           value={edit.stage_id || NONE_VALUE}
           onValueChange={(v) => setEdit({ ...edit, stage_id: v === NONE_VALUE ? '' : (v ?? '') })}
         >
@@ -556,6 +566,7 @@ function EditForm({
       <div>
         <Label>{tn('teamLabel')}</Label>
         <Select
+          items={[{ value: NONE_VALUE, label: t('none') }, ...buildCatalogSelectItems(teams)]}
           value={edit.team_id || NONE_VALUE}
           onValueChange={(v) => setEdit({ ...edit, team_id: v === NONE_VALUE ? '' : (v ?? '') })}
         >
@@ -571,6 +582,7 @@ function EditForm({
       <div>
         <Label>{tn('assigneeLabel')}</Label>
         <Select
+          items={[{ value: NONE_VALUE, label: t('unassigned') }, ...buildMemberSelectItems(members)]}
           value={edit.assigned_user_id || NONE_VALUE}
           onValueChange={(v) => setEdit({ ...edit, assigned_user_id: v === NONE_VALUE ? '' : (v ?? '') })}
         >
@@ -586,6 +598,7 @@ function EditForm({
       <div>
         <Label>{tn('companyLabel')}</Label>
         <Select
+          items={[{ value: NONE_VALUE, label: t('none') }, ...buildCatalogSelectItems(companies)]}
           value={edit.internal_company_id || NONE_VALUE}
           onValueChange={(v) => setEdit({ ...edit, internal_company_id: v === NONE_VALUE ? '' : (v ?? '') })}
         >

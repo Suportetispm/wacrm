@@ -1,16 +1,24 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { ImageResponse } from "next/og";
 
-// Replaces the default Next.js favicon with the brand mark — Hostinger
-// violet rounded square + white chat-square glyph — matching the
-// sidebar logo in `src/components/layout/sidebar.tsx`. Next.js renders
-// this at build time and auto-injects <link rel="icon"> into <head>.
+// Replaces the default Next.js favicon with the brand mark — SuperMassa
+// red rounded square + the diamond glyph — matching the sidebar logo in
+// `src/components/brand/logo.tsx`. Next.js renders this at build time
+// and auto-injects <link rel="icon"> into <head>.
 //
 // This route takes precedence over src/app/favicon.ico, which is the
 // Next.js default and can stay on disk harmlessly (or be removed).
+//
+// Uses the nodejs runtime (not edge) so `fs` can read the real logo
+// asset instead of approximating it with a drawn SVG glyph.
 
-export const runtime = "edge";
 export const size = { width: 32, height: 32 };
 export const contentType = "image/png";
+
+const iconBase64 = readFileSync(
+  join(process.cwd(), "public", "brand", "supermassa-icon.png"),
+).toString("base64");
 
 export default function Icon() {
   return new ImageResponse(
@@ -22,22 +30,18 @@ export default function Icon() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: "#7c3aed", // primary (Hostinger-aligned purple)
+          background: "#ffffff",
           borderRadius: 6,
         }}
       >
-        <svg
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#ffffff"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={`data:image/png;base64,${iconBase64}`}
+          alt=""
+          width={18}
+          height={25}
+          style={{ objectFit: "contain" }}
+        />
       </div>
     ),
     { ...size },

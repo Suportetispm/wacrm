@@ -147,7 +147,6 @@ html[data-mode="light"] {
 
 /* ---- ACCENT: primary color ---- */
 
-:root,
 html[data-theme="violet"] {
   --primary: oklch(0.526 0.247 293);
   --primary-foreground: oklch(0.985 0 0);
@@ -215,6 +214,22 @@ html[data-theme="rose"] {
   --sidebar-primary: oklch(0.645 0.22 16);
   --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-ring: oklch(0.645 0.22 16);
+}
+
+/* SuperMassa — brand red, computed from the real logo pixels (#EE0000 /
+ * #AA0000) via sRGB→OKLCH conversion, not eyeballed. Now the app default. */
+:root,
+html[data-theme="supermassa"] {
+  --primary: oklch(0.596 0.245 29.23);
+  --primary-foreground: oklch(0.985 0 0);
+  --primary-hover: oklch(0.666 0.22 29.23);
+  --primary-soft: oklch(0.596 0.245 29.23 / 0.12);
+  --primary-soft-2: oklch(0.596 0.245 29.23 / 0.2);
+  --ring: oklch(0.596 0.245 29.23);
+  --chart-1: oklch(0.596 0.245 29.23);
+  --sidebar-primary: oklch(0.596 0.245 29.23);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-ring: oklch(0.596 0.245 29.23);
 }
 
 @layer base {

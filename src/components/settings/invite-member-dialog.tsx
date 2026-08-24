@@ -38,6 +38,7 @@ import {
 } from '@/components/ui/select';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/hooks/use-auth';
+import { buildAccountRoleSelectItems } from '@/lib/account/members';
 
 type InviteRole = 'admin' | 'agent' | 'viewer';
 
@@ -270,6 +271,7 @@ export function InviteMemberDialog({
               <div className="space-y-2">
                 <Label className="text-muted-foreground">{t('roleLabel')}</Label>
                 <Select
+                  items={buildAccountRoleSelectItems(tRoles)}
                   value={role}
                   onValueChange={(v) => v && setRole(v as InviteRole)}
                 >
@@ -290,6 +292,10 @@ export function InviteMemberDialog({
               <div className="space-y-2">
                 <Label className="text-muted-foreground">{t('validForLabel')}</Label>
                 <Select
+                  items={EXPIRY_OPTIONS.map((opt) => ({
+                    value: opt.value,
+                    label: t(opt.labelKey as Parameters<typeof t>[0]),
+                  }))}
                   value={expiry}
                   onValueChange={(v) => v && setExpiry(v)}
                 >

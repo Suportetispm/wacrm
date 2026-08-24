@@ -39,6 +39,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useTranslations } from 'next-intl';
+import { buildAccountRoleSelectItems } from '@/lib/account/members';
 
 type CreatableRole = 'admin' | 'agent' | 'viewer';
 
@@ -206,7 +207,11 @@ export function CreateMemberDialog({ open, onOpenChange, onCreated }: CreateMemb
 
           <div className="space-y-2">
             <Label className="text-muted-foreground">{t('fieldRole')}</Label>
-            <Select value={role} onValueChange={(v) => v && setRole(v as CreatableRole)}>
+            <Select
+              items={buildAccountRoleSelectItems(tRoles)}
+              value={role}
+              onValueChange={(v) => v && setRole(v as CreatableRole)}
+            >
               <SelectTrigger className="w-full bg-muted border-border text-foreground">
                 <SelectValue />
               </SelectTrigger>

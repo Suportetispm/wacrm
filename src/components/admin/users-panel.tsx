@@ -45,7 +45,10 @@ import {
 import type { ManagedAccountRole } from "@/lib/platform/users";
 import {
   ROLE_LABEL_KEYS,
+  buildAccountSelectItems,
   buildCreateUserPayload,
+  buildRoleSelectItems,
+  buildStatusFilterSelectItems,
   buildUpdateUserPayload,
   buildUsersQueryParams,
   classifyUserApiError,
@@ -191,6 +194,7 @@ export function UsersPanel() {
           />
         </div>
         <Select
+          items={[{ value: "all", label: t("filterCompanyAll") }, ...buildAccountSelectItems(accounts)]}
           value={filters.accountId || "all"}
           onValueChange={(v) =>
             setFilters((prev) => ({ ...prev, accountId: !v || v === "all" ? "" : v }))
@@ -209,6 +213,7 @@ export function UsersPanel() {
           </SelectContent>
         </Select>
         <Select
+          items={[{ value: "all", label: t("filterRoleAll") }, ...buildRoleSelectItems(t)]}
           value={filters.role}
           onValueChange={(v) =>
             setFilters((prev) => ({
@@ -227,6 +232,7 @@ export function UsersPanel() {
           </SelectContent>
         </Select>
         <Select
+          items={buildStatusFilterSelectItems(t)}
           value={filters.isActive}
           onValueChange={(v) =>
             setFilters((prev) => ({
@@ -662,6 +668,7 @@ function UserFormDialog({
             <div className="space-y-2">
               <Label>{t("fieldCompany")}</Label>
               <Select
+                items={buildAccountSelectItems(accounts)}
                 value={form.accountId}
                 onValueChange={(v) => v && handleAccountChange(v)}
               >
@@ -687,6 +694,7 @@ function UserFormDialog({
           <div className="space-y-2">
             <Label>{t("fieldRole")}</Label>
             <Select
+              items={buildRoleSelectItems(t)}
               value={form.role}
               onValueChange={(v) =>
                 v && setForm((prev) => ({ ...prev, role: v as ManagedAccountRole }))

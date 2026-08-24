@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { resolveSelectedLabel } from '@base-ui/react/internals/resolveValueLabel'
 
 import {
   ROLE_LABEL_KEYS,
+  buildAccountSelectItems,
   buildCreateUserPayload,
+  buildRoleSelectItems,
+  buildStatusFilterSelectItems,
   buildUpdateUserPayload,
   buildUsersQueryParams,
   classifyUserApiError,
@@ -146,5 +150,113 @@ describe('buildCreateUserPayload / buildUpdateUserPayload', () => {
     expect(payload).not.toHaveProperty('email')
     expect(payload).not.toHaveProperty('account_id')
     expect(payload).not.toHaveProperty('password')
+  })
+})
+
+describe('buildAccountSelectItems', () => {
+  it('maps each account UUID to its friendly name — value untouched, label is the name', () => {
+    const items = buildAccountSelectItems([
+      { id: '83ff3bfc-d750-49cf-0000-000000000001', name: 'Fernandes de Macedo' },
+      { id: '5a11c2e4-9b1a-4a3e-0000-000000000002', name: 'Acme Ltda' },
+    ])
+    expect(items).toEqual([
+      { value: '83ff3bfc-d750-49cf-0000-000000000001', label: 'Fernandes de Macedo' },
+      { value: '5a11c2e4-9b1a-4a3e-0000-000000000002', label: 'Acme Ltda' },
+    ])
+  })
+
+  it('an empty account list produces an empty items array (no "all" sentinel of its own)', () => {
+    expect(buildAccountSelectItems([])).toEqual([])
+  })
+})
+
+describe('buildRoleSelectItems', () => {
+  it('maps admin/agent to whatever label the caller\'s t() already returns for this namespace — value stays the technical enum', () => {
+    const t = (key: 'roleAdmin' | 'roleAgent') =>
+      ({ roleAdmin: 'Administrador', roleAgent: 'Usuário' })[key] // Admin.users namespace wording, kept as-is (not unified with sidebar/flows)
+    expect(buildRoleSelectItems(t)).toEqual([
+      { value: 'admin', label: 'Administrador' },
+      { value: 'agent', label: 'Usuário' },
+    ])
+  })
+})
+
+describe('buildStatusFilterSelectItems', () => {
+  it('maps the isActive filter\'s technical values to friendly labels, "all" included', () => {
+    const t = (key: 'filterStatusAll' | 'active' | 'inactive') =>
+      ({ filterStatusAll: 'Todos', active: 'Ativo', inactive: 'Inativo' })[key]
+    expect(buildStatusFilterSelectItems(t)).toEqual([
+      { value: 'all', label: 'Todos' },
+      { value: 'true', label: 'Ativo' },
+      { value: 'false', label: 'Inativo' },
+    ])
+  })
+})
+
+describe('resolveSelectedLabel (real @base-ui/react resolver) against our items', () => {
+  // These exercise the actual library function the Select trigger calls
+  // (node_modules/@base-ui/react/internals/resolveValueLabel.js), not
+  // just our own item-builder output — proving the closed trigger
+  // really does resolve a friendly label end-to-end, and documenting
+  // exactly what happens for a value that isn't in the list.
+
+  const accountItems = [
+    { value: 'all', label: 'Todos' },
+    ...buildAccountSelectItems([
+      { id: '83ff3bfc-d750-49cf-0000-000000000001', name: 'Fernandes de Macedo' },
+    ]),
+  ]
+
+  it('an account UUID resolves to account.name, not the raw UUID', () => {
+    expect(resolveSelectedLabel('83ff3bfc-d750-49cf-0000-000000000001', accountItems)).toBe(
+      'Fernandes de Macedo',
+    )
+  })
+
+  it('"all" resolves to the translated "Todos", not the literal string "all"', () => {
+    expect(resolveSelectedLabel('all', accountItems)).toBe('Todos')
+  })
+
+  it('a role enum resolves to its translated label, not the raw "admin"/"agent" string', () => {
+    const t = (key: 'roleAdmin' | 'roleAgent') =>
+      ({ roleAdmin: 'Administrador', roleAgent: 'Atendente' })[key]
+    const roleItems = [{ value: 'all', label: 'Todos' }, ...buildRoleSelectItems(t)]
+    expect(resolveSelectedLabel('admin', roleItems)).toBe('Administrador')
+    expect(resolveSelectedLabel('agent', roleItems)).toBe('Atendente')
+  })
+
+  it('DOCUMENTED, NOT FIXED: a value with no matching item (e.g. an account deleted after being selected) falls back to the raw value itself — @base-ui/react has no built-in "not found" label', () => {
+    // This is the real library behavior (resolveValueLabel.js:69-107 →
+    // stringifyAsLabel → serializeValue): no match in `items` means the
+    // fallback re-serializes the raw value. For a plain string value
+    // that means the exact same string comes back — i.e. an orphaned
+    // UUID would still render as that UUID in the closed trigger.
+    // Per this step's scope, no new fallback is implemented — this
+    // test only pins the current, real behavior for the next step to
+    // build on.
+    const orphanUuid = 'ffffffff-0000-0000-0000-000000000000'
+    expect(resolveSelectedLabel(orphanUuid, accountItems)).toBe(orphanUuid)
+  })
+
+  it('no known account UUID leaks through as a label anywhere in the built items', () => {
+    for (const item of accountItems) {
+      if (item.value === 'all') continue
+      expect(item.label).not.toBe(item.value)
+    }
+  })
+
+  it('no known role/status enum leaks through as a label anywhere in the built items', () => {
+    const t = (key: 'roleAdmin' | 'roleAgent' | 'filterStatusAll' | 'active' | 'inactive') =>
+      ({
+        roleAdmin: 'Administrador',
+        roleAgent: 'Atendente',
+        filterStatusAll: 'Todos',
+        active: 'Ativo',
+        inactive: 'Inativo',
+      })[key]
+    const allItems = [...buildRoleSelectItems(t), ...buildStatusFilterSelectItems(t)]
+    for (const item of allItems) {
+      expect(item.label).not.toBe(item.value)
+    }
   })
 })

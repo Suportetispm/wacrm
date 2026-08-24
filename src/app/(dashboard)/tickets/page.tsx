@@ -40,8 +40,29 @@ import {
   ticketStatusParamForFilter,
   type OperationalStatus,
 } from '@/lib/tickets/status';
-import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { buildMemberSelectItems, fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { buildQueueSelectItems } from '@/components/flows/forms/node-config-form';
 import type { AccountMember, Queue, Ticket, TicketPriority } from '@/types';
+
+/**
+ * `{value, label}` pairs for a priority Select's `items` prop — same
+ * "closed trigger needs items, not just SelectItem children" reasoning
+ * documented on buildMemberSelectItems (src/lib/account/members.ts).
+ * `t` is whatever translation function the caller already has (this
+ * file uses it from two different namespaces — the filter bar's
+ * `Tickets` and the new-ticket dialog's `Tickets.newTicketDialog` —
+ * each keeps its own existing wording, this only wires it into `items`).
+ */
+export function buildPrioritySelectItems(
+  t: (key: 'priorityLow' | 'priorityNormal' | 'priorityHigh' | 'priorityUrgent') => string,
+): { value: string; label: string }[] {
+  return [
+    { value: 'low', label: t('priorityLow') },
+    { value: 'normal', label: t('priorityNormal') },
+    { value: 'high', label: t('priorityHigh') },
+    { value: 'urgent', label: t('priorityUrgent') },
+  ];
+}
 
 const PRIORITY_BADGE: Record<TicketPriority, string> = {
   low: 'bg-slate-500/15 text-slate-600 dark:text-slate-400',
@@ -188,7 +209,11 @@ export default function TicketsPage() {
             className="w-56 pl-8"
           />
         </div>
-        <Select value={queueId} onValueChange={(v) => setQueueId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allQueues') }, ...buildQueueSelectItems(queues)]}
+          value={queueId}
+          onValueChange={(v) => setQueueId(v ?? 'all')}
+        >
           <SelectTrigger className="w-40"><SelectValue placeholder={t('queueFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allQueues')}</SelectItem>
@@ -197,7 +222,11 @@ export default function TicketsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={assignedAgentId} onValueChange={(v) => setAssignedAgentId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allAssignees') }, ...buildMemberSelectItems(assignableMembers)]}
+          value={assignedAgentId}
+          onValueChange={(v) => setAssignedAgentId(v ?? 'all')}
+        >
           <SelectTrigger className="w-40"><SelectValue placeholder={t('assigneeFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allAssignees')}</SelectItem>
@@ -206,7 +235,11 @@ export default function TicketsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={priority} onValueChange={(v) => setPriority((v ?? 'all') as TicketPriority | 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allPriorities') }, ...buildPrioritySelectItems(t)]}
+          value={priority}
+          onValueChange={(v) => setPriority((v ?? 'all') as TicketPriority | 'all')}
+        >
           <SelectTrigger className="w-32"><SelectValue placeholder={t('priorityFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allPriorities')}</SelectItem>
@@ -470,7 +503,11 @@ function NewTicketDialog({
 
           <div>
             <Label>{t('queueLabel')}</Label>
-            <Select value={queueId} onValueChange={(v) => setQueueId(v ?? '')}>
+            <Select
+              items={buildQueueSelectItems(queues)}
+              value={queueId}
+              onValueChange={(v) => setQueueId(v ?? '')}
+            >
               <SelectTrigger><SelectValue placeholder={t('queuePlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {queues.map((qu) => (
@@ -482,7 +519,11 @@ function NewTicketDialog({
 
           <div>
             <Label>{t('priorityLabel')}</Label>
-            <Select value={priority} onValueChange={(v) => setPriority((v ?? 'normal') as TicketPriority)}>
+            <Select
+              items={buildPrioritySelectItems(t)}
+              value={priority}
+              onValueChange={(v) => setPriority((v ?? 'normal') as TicketPriority)}
+            >
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="low">{t('priorityLow')}</SelectItem>

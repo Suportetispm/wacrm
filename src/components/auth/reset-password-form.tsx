@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-import { CheckCircle, KeyRound, Loader2 } from 'lucide-react';
+import { CheckCircle, Loader2 } from 'lucide-react';
 
 import { createClient } from '@/lib/supabase/client';
 import { MIN_PASSWORD, submitNewPassword, type ResetPasswordError } from '@/lib/auth/reset-password';
@@ -17,6 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { BrandMark } from '@/components/brand/logo';
 
 // How long the success message stays up before we hand off to /login
 // with a full page reload — matches the "hard navigation, not
@@ -134,9 +135,7 @@ export function ResetPasswordForm() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-md border-border bg-card">
         <CardHeader className="items-center text-center">
-          <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-            <KeyRound className="h-6 w-6 text-primary" />
-          </div>
+          <BrandMark size={48} className="mb-2 rounded-xl" />
           <CardTitle className="text-xl text-foreground">{t('title')}</CardTitle>
           <CardDescription className="text-muted-foreground">{t('description')}</CardDescription>
         </CardHeader>

@@ -67,6 +67,7 @@ import { RequireRole } from '@/components/auth/require-role';
 import { useAuth } from '@/hooks/use-auth';
 import { usePresence } from '@/hooks/use-presence';
 import type { AccountRole } from '@/lib/auth/roles';
+import { buildAccountRoleSelectItems } from '@/lib/account/members';
 import { presenceLabel, summarize } from '@/lib/presence';
 import {
   PRESENCE_DOT_CLASS,
@@ -423,6 +424,7 @@ export function MembersTab() {
                         changes go through transfer, which lands later). */}
                     {canManageMembers && !isOwnerRow && !isSelf ? (
                       <Select
+                        items={buildAccountRoleSelectItems(tRoles)}
                         value={member.role}
                         onValueChange={(v) =>
                           // Base UI Select can emit null on clear. We

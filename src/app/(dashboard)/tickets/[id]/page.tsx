@@ -42,6 +42,7 @@ import {
 } from '@/lib/tickets/status';
 import { eligibleTransferAgentCandidates, type TransferAgentCandidate } from '@/lib/tickets/candidates';
 import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { buildQueueSelectItems } from '@/components/flows/forms/node-config-form';
 import type { AccountMember, Queue, Ticket, TicketEvent, TicketPriority } from '@/types';
 
 const PRIORITY_BADGE: Record<TicketPriority, string> = {
@@ -454,7 +455,11 @@ function TransferQueueDialog({
         ) : (
           <div className="space-y-2">
             <Label>{t('queueLabel')}</Label>
-            <Select value={queueId} onValueChange={(v) => setQueueId(v ?? '')}>
+            <Select
+              items={buildQueueSelectItems(queues)}
+              value={queueId}
+              onValueChange={(v) => setQueueId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('queuePlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {queues.map((q) => (
@@ -549,7 +554,11 @@ function TransferAgentDialog({
         ) : (
           <div className="space-y-2">
             <Label>{t('agentLabel')}</Label>
-            <Select value={agentUserId} onValueChange={(v) => setAgentUserId(v ?? '')}>
+            <Select
+              items={candidates.map((c) => ({ value: c.user_id, label: c.label }))}
+              value={agentUserId}
+              onValueChange={(v) => setAgentUserId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('agentPlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {candidates.map((c) => (

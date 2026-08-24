@@ -23,6 +23,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { buildMemberSelectItems } from '@/lib/account/members';
 import type { Queue, QueueMember, QueueMemberRole } from '@/types';
 
 interface AccountMember {
@@ -35,6 +36,22 @@ interface QueueMembersDialogProps {
   queue: Queue;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+/**
+ * `{value, label}` pairs for the per-member role_in_queue Select's
+ * `items` prop — same "closed trigger needs items, not just
+ * SelectItem children" reasoning documented on buildMemberSelectItems
+ * (src/lib/account/members.ts). `t` is whatever
+ * `useTranslations('Settings.queueMembers')` the caller already has.
+ */
+export function buildQueueMemberRoleSelectItems(
+  t: (key: 'roleAgent' | 'roleSupervisor') => string,
+): { value: string; label: string }[] {
+  return [
+    { value: 'agent', label: t('roleAgent') },
+    { value: 'supervisor', label: t('roleSupervisor') },
+  ];
 }
 
 /**
@@ -156,7 +173,11 @@ export function QueueMembersDialog({ queue, open, onOpenChange }: QueueMembersDi
         ) : (
           <div className="space-y-4">
             <div className="flex gap-2">
-              <Select value={selectedUserId} onValueChange={(v) => setSelectedUserId(v ?? '')}>
+              <Select
+                items={buildMemberSelectItems(availableToAdd)}
+                value={selectedUserId}
+                onValueChange={(v) => setSelectedUserId(v ?? '')}
+              >
                 <SelectTrigger className="flex-1">
                   <SelectValue placeholder={t('pickPlaceholder')} />
                 </SelectTrigger>
@@ -209,6 +230,7 @@ export function QueueMembersDialog({ queue, open, onOpenChange }: QueueMembersDi
 
                     <div className="mt-2 grid grid-cols-3 gap-2">
                       <Select
+                        items={buildQueueMemberRoleSelectItems(t)}
                         value={member.role_in_queue}
                         onValueChange={(v) => updateMember(member, { role_in_queue: (v ?? 'agent') as QueueMemberRole })}
                       >

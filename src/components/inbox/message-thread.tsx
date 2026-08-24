@@ -171,7 +171,7 @@ function groupMessagesByDate(messages: Message[]) {
 // não o texto exibido — as strings visíveis vêm sempre de messages/*.json.
 const STATUS_OPTIONS: { label: string; value: ConversationStatus; color: string }[] = [
   { label: "Pending", value: "pending", color: "text-amber-400" },
-  { label: "InProgress", value: "in_progress", color: "text-primary" },
+  { label: "InProgress", value: "in_progress", color: "text-violet-400" },
   { label: "WaitingCustomer", value: "waiting_customer", color: "text-blue-400" },
   { label: "Closed", value: "closed", color: "text-muted-foreground" },
   { label: "Finalized", value: "finalized", color: "text-emerald-500" },
@@ -1089,7 +1089,7 @@ export function MessageThread({
             variant="outline"
             className={cn(
               "ml-1 hidden gap-1 border-border text-[10px] sm:inline-flex sm:ml-2",
-              sessionInfo.expired ? "text-red-400" : "text-primary"
+              sessionInfo.expired ? "text-red-400" : "text-emerald-400"
             )}
           >
             <Clock className="h-3 w-3" />

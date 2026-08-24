@@ -70,7 +70,7 @@ const STATUS_BADGE_CONFIG: Record<
   { icon: typeof Clock; className: string; labelKey: string }
 > = {
   pending: { icon: Clock, className: "text-amber-400 bg-amber-400/10", labelKey: "statusPending" },
-  in_progress: { icon: MessageCircle, className: "text-primary bg-primary/10", labelKey: "statusInProgress" },
+  in_progress: { icon: MessageCircle, className: "text-violet-400 bg-violet-400/10", labelKey: "statusInProgress" },
   waiting_customer: { icon: Hourglass, className: "text-blue-400 bg-blue-400/10", labelKey: "statusWaitingCustomer" },
   closed: { icon: CheckCircle2, className: "text-muted-foreground bg-muted", labelKey: "statusClosed" },
   finalized: { icon: CheckCheck, className: "text-emerald-500 bg-emerald-500/10", labelKey: "statusFinalized" },
@@ -717,7 +717,7 @@ function ConversationItem({
       onClick={handleClick}
       className={cn(
         "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
-        isActive && "border-l-2 border-primary bg-muted/70"
+        isActive && "border-l-2 border-primary bg-primary/10"
       )}
     >
       {/* Avatar */}

@@ -582,9 +582,14 @@ export function MessageBubble({
     >
       <div
         className={cn(
-          "relative rounded-2xl px-3 py-2",
+          "relative rounded-lg px-3 py-2",
           isAgent
-            ? "rounded-br-md bg-primary text-primary-foreground"
+            // Tom vermelho escuro/dessaturado, não o vermelho vivo do
+            // primary (usado em botões/ações) — texto continua
+            // primary-foreground (branco em todos os temas), então
+            // não precisa mudar em nenhum outro lugar que dependa
+            // desse contraste (badge de IA, timestamp, ReplyQuote).
+            ? "rounded-br-md bg-[oklch(0.42_0.13_29.23)] text-primary-foreground"
             : "rounded-bl-md bg-muted text-foreground",
         )}
       >

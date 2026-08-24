@@ -36,7 +36,8 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { buildMemberSelectItems, fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { buildCatalogSelectItems } from '@/lib/internal-tickets/select-items';
 import type {
   AccountMember,
   InternalCompany,
@@ -173,7 +174,11 @@ export default function InternalTicketsPage() {
             className="w-56 pl-8"
           />
         </div>
-        <Select value={typeId} onValueChange={(v) => setTypeId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allTypes') }, ...buildCatalogSelectItems(catalogs.types)]}
+          value={typeId}
+          onValueChange={(v) => setTypeId(v ?? 'all')}
+        >
           <SelectTrigger className="w-36"><SelectValue placeholder={t('typeFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allTypes')}</SelectItem>
@@ -182,7 +187,11 @@ export default function InternalTicketsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={statusId} onValueChange={(v) => setStatusId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allStatuses') }, ...buildCatalogSelectItems(catalogs.statuses)]}
+          value={statusId}
+          onValueChange={(v) => setStatusId(v ?? 'all')}
+        >
           <SelectTrigger className="w-36"><SelectValue placeholder={t('statusFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allStatuses')}</SelectItem>
@@ -191,7 +200,11 @@ export default function InternalTicketsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={stageId} onValueChange={(v) => setStageId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allStages') }, ...buildCatalogSelectItems(catalogs.stages)]}
+          value={stageId}
+          onValueChange={(v) => setStageId(v ?? 'all')}
+        >
           <SelectTrigger className="w-36"><SelectValue placeholder={t('stageFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allStages')}</SelectItem>
@@ -200,7 +213,11 @@ export default function InternalTicketsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={teamId} onValueChange={(v) => setTeamId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allTeams') }, ...buildCatalogSelectItems(catalogs.teams)]}
+          value={teamId}
+          onValueChange={(v) => setTeamId(v ?? 'all')}
+        >
           <SelectTrigger className="w-36"><SelectValue placeholder={t('teamFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allTeams')}</SelectItem>
@@ -209,7 +226,11 @@ export default function InternalTicketsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={assigneeId} onValueChange={(v) => setAssigneeId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allAssignees') }, ...buildMemberSelectItems(catalogs.members)]}
+          value={assigneeId}
+          onValueChange={(v) => setAssigneeId(v ?? 'all')}
+        >
           <SelectTrigger className="w-40"><SelectValue placeholder={t('assigneeFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allAssignees')}</SelectItem>
@@ -218,7 +239,11 @@ export default function InternalTicketsPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={companyId} onValueChange={(v) => setCompanyId(v ?? 'all')}>
+        <Select
+          items={[{ value: 'all', label: t('allCompanies') }, ...buildCatalogSelectItems(catalogs.companies)]}
+          value={companyId}
+          onValueChange={(v) => setCompanyId(v ?? 'all')}
+        >
           <SelectTrigger className="w-40"><SelectValue placeholder={t('companyFilterPlaceholder')} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t('allCompanies')}</SelectItem>
@@ -467,7 +492,11 @@ function NewInternalTicketDialog({
 
           <div>
             <Label>{t('typeLabel')}</Label>
-            <Select value={typeId} onValueChange={(v) => setTypeId(v ?? '')}>
+            <Select
+              items={buildCatalogSelectItems(activeTypes)}
+              value={typeId}
+              onValueChange={(v) => setTypeId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('typePlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {activeTypes.map((x) => (
@@ -479,7 +508,11 @@ function NewInternalTicketDialog({
 
           <div>
             <Label>{t('statusLabel')}</Label>
-            <Select value={statusId} onValueChange={(v) => setStatusId(v ?? '')}>
+            <Select
+              items={buildCatalogSelectItems(activeStatuses)}
+              value={statusId}
+              onValueChange={(v) => setStatusId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('statusPlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {activeStatuses.map((x) => (
@@ -491,7 +524,11 @@ function NewInternalTicketDialog({
 
           <div>
             <Label>{t('stageLabel')}</Label>
-            <Select value={stageId} onValueChange={(v) => setStageId(v ?? '')}>
+            <Select
+              items={buildCatalogSelectItems(activeStages)}
+              value={stageId}
+              onValueChange={(v) => setStageId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('stagePlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {activeStages.map((x) => (
@@ -503,7 +540,11 @@ function NewInternalTicketDialog({
 
           <div>
             <Label>{t('teamLabel')}</Label>
-            <Select value={teamId} onValueChange={(v) => setTeamId(v ?? '')}>
+            <Select
+              items={buildCatalogSelectItems(activeTeams)}
+              value={teamId}
+              onValueChange={(v) => setTeamId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('teamPlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {activeTeams.map((x) => (
@@ -515,7 +556,11 @@ function NewInternalTicketDialog({
 
           <div>
             <Label>{t('assigneeLabel')}</Label>
-            <Select value={assigneeId} onValueChange={(v) => setAssigneeId(v ?? '')}>
+            <Select
+              items={buildMemberSelectItems(members.filter((m) => m.is_active))}
+              value={assigneeId}
+              onValueChange={(v) => setAssigneeId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('assigneePlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {members.filter((m) => m.is_active).map((m) => (
@@ -527,7 +572,11 @@ function NewInternalTicketDialog({
 
           <div>
             <Label>{t('companyLabel')}</Label>
-            <Select value={companyId} onValueChange={(v) => setCompanyId(v ?? '')}>
+            <Select
+              items={buildCatalogSelectItems(activeCompanies)}
+              value={companyId}
+              onValueChange={(v) => setCompanyId(v ?? '')}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder={t('companyPlaceholder')} /></SelectTrigger>
               <SelectContent>
                 {activeCompanies.map((x) => (

@@ -23,6 +23,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { buildMemberSelectItems } from '@/lib/account/members';
 import type { AccountMember, InternalTeam, InternalTeamMember } from '@/types';
 
 interface TeamMembersDialogProps {
@@ -144,7 +145,11 @@ export function TeamMembersDialog({ team, open, onOpenChange, onMembersChanged }
           <div className="space-y-4">
             {canEdit && (
               <div className="flex gap-2">
-                <Select value={selectedUserId} onValueChange={(v) => setSelectedUserId(v ?? '')}>
+                <Select
+                  items={buildMemberSelectItems(availableToAdd)}
+                  value={selectedUserId}
+                  onValueChange={(v) => setSelectedUserId(v ?? '')}
+                >
                   <SelectTrigger className="flex-1">
                     <SelectValue placeholder={t('pickPlaceholder')} />
                   </SelectTrigger>

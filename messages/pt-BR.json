@@ -1,9 +1,9 @@
 {
   "LoginPage": {
     "titleAccept": "Entrar para aceitar",
-    "titleWelcome": "Bem-vindo(a) de volta",
+    "titleWelcome": "Acessar o sistema",
     "descAccept": "Entre e vamos te levar até o convite.",
-    "descWelcome": "Entre na sua conta",
+    "descWelcome": "Entre com suas credenciais para continuar",
     "emailLabel": "Email",
     "emailPlaceholder": "voce@exemplo.com",
     "passwordLabel": "Senha",
@@ -12,7 +12,9 @@
     "signingIn": "Entrando...",
     "signIn": "Entrar",
     "noAccount": "Não tem uma conta?",
-    "createAccount": "Criar conta"
+    "createAccount": "Criar conta",
+    "brandSubtitle": "CRM de Atendimento",
+    "orDivider": "ou"
   },
   "ForgotPasswordPage": {
     "title": "Redefinir senha",
@@ -45,7 +47,7 @@
     "backToSignIn": "Voltar para o login"
   },
   "Sidebar": {
-    "title": "Modelo de CRM para WhatsApp",
+    "title": "SPM Ticket",
     "dashboard": "Painel",
     "inbox": "Caixa de entrada",
     "notifications": "Notificações",
@@ -1622,7 +1624,7 @@
       "labelTooLong": "O rótulo deve ter no máximo {max} caracteres",
       "copied": "Link de convite copiado",
       "clipboardBlocked": "Área de transferência bloqueada — copie o link manualmente",
-      "whatsappMessage": "Junte-se a {accountName} no wacrm usando este link (válido por {expiresInDays} dias): {url}"
+      "whatsappMessage": "Junte-se a {accountName} no SPM Ticket usando este link (válido por {expiresInDays} dias): {url}"
     },
     "createMember": {
       "dialogTitle": "Criar usuário",
@@ -1753,8 +1755,8 @@
       "saveResubmit": "Salvar e Reenviar",
       "submitApproval": "Enviar para Aprovação",
       "deleteDialogTitle": "Excluir modelo?",
-      "deleteMetaDesc": "\"{name}\" será excluído da Meta e do wacrm. Transmissões ativas que usam este modelo começarão a falhar no próximo envio. Isso não pode ser desfeito.",
-      "deleteLocalDesc": "\"{name}\" será excluído do wacrm. Ele nunca foi enviado à Meta, então nenhuma limpeza remota é necessária.",
+      "deleteMetaDesc": "\"{name}\" será excluído da Meta e do SPM Ticket. Transmissões ativas que usam este modelo começarão a falhar no próximo envio. Isso não pode ser desfeito.",
+      "deleteLocalDesc": "\"{name}\" será excluído do SPM Ticket. Ele nunca foi enviado à Meta, então nenhuma limpeza remota é necessária.",
       "deleting": "Excluindo…",
       "delete": "Excluir",
       "toastLoadFailed": "Falha ao carregar modelos",
@@ -1795,7 +1797,7 @@
       "notConnected": "Não Conectado",
       "connectedDesc": "Seu token de acesso autentica com a Meta. Veja o status de Registro abaixo para saber se os webhooks estão realmente configurados.",
       "notConnectedDesc": "Configure suas credenciais da API da Meta abaixo para conectar sua conta do WhatsApp Business.",
-      "registered": "Registrado — a Meta entregará eventos ao wacrm",
+      "registered": "Registrado — a Meta entregará eventos ao SPM Ticket",
       "notRegistered": "Não registrado — a Meta não entregará eventos",
       "verifyWithMeta": "Verificar com a Meta",
       "subscribedSince": "Inscrito desde {date}. Clique em Verificar com a Meta se os eventos pararem de chegar.",
@@ -1819,7 +1821,7 @@
       "twoStepPin": "PIN de verificação em duas etapas",
       "optional": "(opcional)",
       "pinPlaceholder": "PIN de 6 dígitos do Meta WhatsApp Manager",
-      "pinHint": "Necessário apenas para configurar mensagens recebidas em um número de produção. Defina-o no Meta Business Manager → Contas do WhatsApp → Números de Telefone → Verificação em duas etapas e cole-o aqui para que o wacrm possa inscrever o número — caso contrário, a Meta encaminha os eventos recebidos para o último aplicativo que reivindicou o número (o sintoma que afeta números secundários em uma WABA compartilhada). Números de teste da Meta não têm PIN e já vêm pré-registrados — deixe em branco para eles. Deixar em branco também mantém um registro existente intocado.",
+      "pinHint": "Necessário apenas para configurar mensagens recebidas em um número de produção. Defina-o no Meta Business Manager → Contas do WhatsApp → Números de Telefone → Verificação em duas etapas e cole-o aqui para que o SPM Ticket possa inscrever o número — caso contrário, a Meta encaminha os eventos recebidos para o último aplicativo que reivindicou o número (o sintoma que afeta números secundários em uma WABA compartilhada). Números de teste da Meta não têm PIN e já vêm pré-registrados — deixe em branco para eles. Deixar em branco também mantém um registro existente intocado.",
       "webhookTitle": "Configuração do Webhook",
       "webhookDesc": "Use esta URL como seu callback de webhook no Painel de Aplicativos da Meta.",
       "webhookUrl": "URL de Callback do Webhook",
@@ -2064,7 +2066,7 @@
     },
     "aiConfig": {
       "title": "Configuração do agente",
-      "description": "Use sua própria chave OpenAI ou Anthropic. O wacrm chama o provedor diretamente com sua chave — sem taxas de IA por usuário, e seus dados continuam seus. Isso alimenta as respostas geradas por IA na caixa de entrada, o bot de resposta automática e o Playground.",
+      "description": "Use sua própria chave OpenAI ou Anthropic. O SPM Ticket chama o provedor diretamente com sua chave — sem taxas de IA por usuário, e seus dados continuam seus. Isso alimenta as respostas geradas por IA na caixa de entrada, o bot de resposta automática e o Playground.",
       "adminOnlyConfig": "Somente administradores e proprietários podem alterar a configuração de IA.",
       "loadFailed": "Falha ao carregar a configuração de IA",
       "providerAndKey": "Provedor e chave",

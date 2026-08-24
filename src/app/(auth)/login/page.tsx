@@ -8,14 +8,8 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { MessageSquare, UsersRound } from "lucide-react";
+import { SuperMassaLogo, BrandLockup } from "@/components/brand/logo";
+import { Eye, EyeOff } from "lucide-react";
 
 // `useSearchParams` opts the component out of static prerendering
 // unless it sits under a Suspense boundary. We split the form into
@@ -40,6 +34,7 @@ function LoginPageInner() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const supabase = createClient();
@@ -75,95 +70,154 @@ function LoginPageInner() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <Card className="w-full max-w-md border-border bg-card">
-        <CardHeader className="items-center text-center">
-          <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-            {inviteToken ? (
-              <UsersRound className="h-6 w-6 text-primary" />
-            ) : (
-              <MessageSquare className="h-6 w-6 text-primary" />
-            )}
-          </div>
-          <CardTitle className="text-xl text-foreground">
-            {inviteToken ? t('titleAccept') : t('titleWelcome')}
-          </CardTitle>
-          <CardDescription className="text-muted-foreground">
-            {inviteToken
-              ? t('descAccept')
-              : t('descWelcome')}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleLogin} className="flex flex-col gap-4">
+    <div className="flex min-h-screen">
+      {/* Left — formulário. Fundo claro fixo, independente do modo
+          claro/escuro salvo do usuário: esta tela usa a identidade
+          visual da marca, não o tema do painel interno. */}
+      <div className="flex w-full flex-col justify-center bg-white px-6 py-12 sm:px-12 lg:w-1/2 lg:px-20">
+        <div className="mx-auto w-full max-w-sm">
+          <BrandLockup
+            className="mt-3 mb-10"
+            markSize={44}
+            textClassName="text-base"
+            subtitleClassName="text-sm"
+            subtitle={t("brandSubtitle")}
+          />
+
+          <h1 className="text-2xl font-semibold text-neutral-900">
+            {inviteToken ? t("titleAccept") : t("titleWelcome")}
+          </h1>
+          <p className="mt-1.5 text-sm text-neutral-500">
+            {inviteToken ? t("descAccept") : t("descWelcome")}
+          </p>
+
+          <form onSubmit={handleLogin} className="mt-8 flex flex-col gap-4">
             {error && (
-              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {error}
               </div>
             )}
 
             <div className="flex flex-col gap-2">
-              <Label htmlFor="email" className="text-muted-foreground">
-                {t('emailLabel')}
+              <Label htmlFor="email" className="text-neutral-700">
+                {t("emailLabel")}
               </Label>
               <Input
                 id="email"
                 type="email"
-                placeholder={t('emailPlaceholder')}
+                placeholder={t("emailPlaceholder")}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="border-border bg-muted text-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-primary/20"
+                className="border-neutral-200 bg-white text-neutral-900 placeholder:text-neutral-400 focus-visible:border-[#EE0000] focus-visible:ring-[#EE0000]/20"
               />
             </div>
 
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="password" className="text-muted-foreground">
-                  {t('passwordLabel')}
+                <Label htmlFor="password" className="text-neutral-700">
+                  {t("passwordLabel")}
                 </Label>
                 <Link
                   href="/forgot-password"
-                  className="text-sm text-primary hover:text-primary/80"
+                  className="text-sm text-[#EE0000] hover:text-[#AA0000]"
                 >
-                  {t('forgotPassword')}
+                  {t("forgotPassword")}
                 </Link>
               </div>
-              <Input
-                id="password"
-                type="password"
-                placeholder={t('passwordPlaceholder')}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="border-border bg-muted text-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-primary/20"
-              />
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  placeholder={t("passwordPlaceholder")}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="border-neutral-200 bg-white pr-9 text-neutral-900 placeholder:text-neutral-400 focus-visible:border-[#EE0000] focus-visible:ring-[#EE0000]/20"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  className="absolute top-1/2 right-3 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
             </div>
 
             <Button
               type="submit"
               disabled={loading}
-              className="mt-2 h-10 w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="mt-2 h-10 w-full bg-[#EE0000] text-white hover:bg-[#AA0000] disabled:opacity-50"
             >
-              {loading ? t('signingIn') : t('signIn')}
+              {loading ? t("signingIn") : t("signIn")}
             </Button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-muted-foreground">
-            {t('noAccount')}{" "}
+          <div className="mt-6 flex items-center gap-3" role="separator">
+            <div className="h-px flex-1 bg-neutral-200" />
+            <span className="text-xs text-neutral-400">{t("orDivider")}</span>
+            <div className="h-px flex-1 bg-neutral-200" />
+          </div>
+
+          <p className="mt-4 text-center text-sm text-neutral-500">
+            {t("noAccount")}{" "}
             <Link
               href={
                 inviteToken
                   ? `/signup?invite=${encodeURIComponent(inviteToken)}`
                   : "/signup"
               }
-              className="text-primary hover:text-primary/80"
+              className="font-medium text-[#EE0000] hover:text-[#AA0000]"
             >
-              {t('createAccount')}
+              {t("createAccount")}
             </Link>
           </p>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
+
+      {/* Right — painel institucional. Oculto em telas pequenas para
+          manter o formulário como foco no mobile. */}
+      <div className="relative hidden overflow-hidden bg-black lg:flex lg:w-1/2 lg:flex-col lg:p-12">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(circle at 65% 20%, rgba(255,80,80,0.55), transparent 50%), linear-gradient(160deg, #3a0000 0%, #7a0000 40%, #0a0000 100%)",
+          }}
+        />
+
+        {/* brightness-0 invert: a logo é vermelha por natureza — vira uma
+            silhueta branca aqui para garantir contraste em cima do painel
+            escuro, independente do tom exato do gradiente. */}
+        <SuperMassaLogo
+          height={48}
+          className="relative shrink-0 opacity-95 brightness-0 invert"
+        />
+
+        <div className="relative flex flex-1 flex-col justify-center">
+          <h2 className="text-5xl leading-tight font-bold text-white">
+            SPM Ticket
+          </h2>
+          <p className="mt-2 text-xl text-white/80">
+            Sistema de atendimento e gestão de tickets
+          </p>
+          <p className="mt-6 max-w-md text-base leading-relaxed text-white/60">
+            Centralize conversas, organize setores e distribua demandas com
+            agilidade e eficiência.
+          </p>
+          <p className="mt-4 max-w-md text-base leading-relaxed text-white/60">
+            Mais controle, mais produtividade e melhor experiência para sua
+            equipe e seus clientes.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/dialog';
 import { SettingsPanelHead } from './settings-panel-head';
 import { QueueMembersDialog } from './queue-members-dialog';
+import { buildQueueSelectItems } from '@/components/flows/forms/node-config-form';
 import type { Queue, QueueFailureAction, TicketPriority } from '@/types';
 
 const PRESET_COLORS = [
@@ -415,6 +416,7 @@ function QueueManagerContent() {
                 <div>
                   <Label>{t('fieldPriority')}</Label>
                   <Select
+                    items={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p] }))}
                     value={draft.default_priority}
                     onValueChange={(v) => setDraft({ ...draft, default_priority: (v ?? 'normal') as TicketPriority })}
                   >
@@ -459,6 +461,7 @@ function QueueManagerContent() {
                   <div>
                     <Label>{t('fieldOnFailure')}</Label>
                     <Select
+                      items={FAILURE_ACTIONS.map((a) => ({ value: a, label: FAILURE_ACTION_LABEL[a] }))}
                       value={draft.chatbot_failure_action}
                       onValueChange={(v) =>
                         setDraft({ ...draft, chatbot_failure_action: (v ?? 'stay_in_queue') as QueueFailureAction })
@@ -477,6 +480,7 @@ function QueueManagerContent() {
                   <div>
                     <Label>{t('fieldTransferTo')}</Label>
                     <Select
+                      items={buildQueueSelectItems(transferTargets)}
                       value={draft.chatbot_failure_queue_id}
                       onValueChange={(v) => setDraft({ ...draft, chatbot_failure_queue_id: v ?? '' })}
                     >

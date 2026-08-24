@@ -29,6 +29,61 @@ export const ROLE_LABEL_KEYS: Record<ManagedAccountRole, 'roleAdmin' | 'roleAgen
   agent: 'roleAgent',
 }
 
+export interface SelectItemOption {
+  value: string
+  label: string
+}
+
+/**
+ * `{value, label}` pairs for the company Select's `items` prop.
+ *
+ * base-ui's closed-trigger `<Select.Value>` resolves its displayed
+ * label ONLY from `Select.Root`'s `items` — never from the rendered
+ * `<SelectItem>` children (see
+ * node_modules/@base-ui/react/internals/resolveValueLabel.js,
+ * `resolveSelectedLabel()`). Without `items`, a selected account_id
+ * renders as its own raw UUID once picked. No "all" sentinel here —
+ * this is reused by the create-user dialog's company picker, which is
+ * a required single choice, not a filter with an "everything" option.
+ */
+export function buildAccountSelectItems(
+  accounts: { id: string; name: string }[],
+): SelectItemOption[] {
+  return accounts.map((a) => ({ value: a.id, label: a.name }))
+}
+
+/**
+ * `{value, label}` pairs for the role Select's `items` prop — same
+ * "items required for the closed trigger" reasoning as
+ * buildAccountSelectItems above. No "all" sentinel; reused by the
+ * create/edit-user dialog's role picker (always a real role, never
+ * "all"). The filter Select prepends its own `{value:"all", ...}`
+ * item at the call site instead of a second near-duplicate helper —
+ * mirrors the existing fallback_queue_id sentinel pattern in
+ * src/components/flows/forms/node-config-form.tsx.
+ */
+export function buildRoleSelectItems(t: (key: 'roleAdmin' | 'roleAgent') => string): SelectItemOption[] {
+  return [
+    { value: 'admin', label: t('roleAdmin') },
+    { value: 'agent', label: t('roleAgent') },
+  ]
+}
+
+/**
+ * `{value, label}` pairs for the isActive filter's `items` prop.
+ * Includes its own "all" entry — unlike account/role, this filter has
+ * no other (non-"all") use case elsewhere on this screen.
+ */
+export function buildStatusFilterSelectItems(
+  t: (key: 'filterStatusAll' | 'active' | 'inactive') => string,
+): SelectItemOption[] {
+  return [
+    { value: 'all', label: t('filterStatusAll') },
+    { value: 'true', label: t('active') },
+    { value: 'false', label: t('inactive') },
+  ]
+}
+
 /**
  * Builds the query string for `GET /api/admin/users` from the panel's
  * filter state. Empty/`'all'` values are omitted entirely rather than
