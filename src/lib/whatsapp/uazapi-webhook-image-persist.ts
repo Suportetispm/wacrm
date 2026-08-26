@@ -97,9 +97,20 @@ export interface PersistInboundImageMessageArgs {
   parsed: ParsedInboundImageMessage
 }
 
+/**
+ * Routing state re-read from `conversations` by primary key AFTER the
+ * RPC's own commit — same pattern and same rationale as
+ * `uazapi-webhook-document-persist.ts`'s `RoutingState`: `null` means
+ * the re-read itself failed or found no row, never "confirmed
+ * unrouted". The caller must not start a Flow when this is `null`.
+ */
+export interface RoutingState {
+  queueId: string | null
+  assignedAgentId: string | null
+}
+
 export type PersistInboundImageOutcome =
-  | { outcome: 'persisted' }
-  | { outcome: 'duplicate' }
+  | { outcome: 'persisted' | 'duplicate'; contactId: string; conversationId: string; routingState: RoutingState | null }
   | {
       outcome: 'error'
       code:
@@ -260,7 +271,15 @@ export async function persistInboundImageMessage({
     )
     // Not fatal — fall through, the RPC still guards correctness.
   } else if (existingRow) {
-    return { outcome: 'duplicate' }
+    // Known-duplicate short-circuit, before the RPC ever runs — no
+    // routing state to confirm here (nothing was written), and it's
+    // moot anyway: the route never dispatches to Flows on 'duplicate'.
+    return {
+      outcome: 'duplicate',
+      contactId: contact.id as string,
+      conversationId: conversation.id as string,
+      routingState: null,
+    }
   }
 
   let downloadResult: Awaited<ReturnType<typeof downloadMessageMedia>>
@@ -395,8 +414,39 @@ export async function persistInboundImageMessage({
       return { outcome: 'error', code: 'database_failed' }
     }
 
-    if (rpcResult === 'persisted') return { outcome: 'persisted' }
-    if (rpcResult === 'duplicate') return { outcome: 'duplicate' }
+    if (rpcResult === 'persisted' || rpcResult === 'duplicate') {
+      // One cheap indexed SELECT by primary key, immediately after the
+      // RPC's own commit — same pattern as the document path. A failed
+      // or empty re-read yields `routingState: null`, never defaulted
+      // to an empty/unrouted shape.
+      const { data: freshConversation, error: rereadError } = await db
+        .from('conversations')
+        .select('queue_id, assigned_agent_id')
+        .eq('id', conversation.id)
+        .maybeSingle()
+
+      const routingState: RoutingState | null =
+        !rereadError && freshConversation
+          ? {
+              queueId: (freshConversation.queue_id as string | null) ?? null,
+              assignedAgentId: (freshConversation.assigned_agent_id as string | null) ?? null,
+            }
+          : null
+
+      if (rereadError) {
+        console.error(
+          '[uazapi/webhook:image-persist] post-RPC routing re-read failed:',
+          classifyDatabaseError(rereadError),
+        )
+      }
+
+      return {
+        outcome: rpcResult,
+        contactId: contact.id as string,
+        conversationId: conversation.id as string,
+        routingState,
+      }
+    }
 
     console.error('[uazapi/webhook:image-persist] rpc returned an unexpected value')
     return { outcome: 'error', code: 'database_failed' }

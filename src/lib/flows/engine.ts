@@ -323,9 +323,15 @@ async function findEntryFlow(
   queueId: string | null | undefined,
   assignedAgentId: string | null | undefined,
 ): Promise<FlowRow | null> {
-  // Only text messages can match an entry trigger. Interactive replies
-  // are responses to existing prompts; they never start a new flow.
-  if (message.kind !== "text") return null;
+  // Interactive replies are responses to existing prompts; they never
+  // start a new flow. Text and media (image/document — see
+  // ParsedInbound in types.ts) can, subject to the per-trigger-type
+  // gates below: keyword and first_inbound_message require REAL text
+  // (a caption-less photo has none to match against, and media
+  // deliberately never counts as "first inbound" — see the loop below);
+  // inbound_message alone accepts media, since it doesn't inspect
+  // content at all, only routing state.
+  if (message.kind !== "text" && message.kind !== "media") return null;
 
   // Pull all active flows for this account. Active set is bounded
   // (the builder discourages double-trigger overlap; partial index
@@ -352,13 +358,23 @@ async function findEntryFlow(
   const typed = flows as FlowRow[];
   for (const flow of typed) {
     if (flow.trigger_type === "keyword") {
-      if (matchesKeywordTrigger(
-        message.text,
-        flow.trigger_config as KeywordTriggerConfig,
-      )) {
+      // Media has no text to match a keyword against — never matches,
+      // regardless of trigger_config.
+      if (
+        message.kind === "text" &&
+        matchesKeywordTrigger(message.text, flow.trigger_config as KeywordTriggerConfig)
+      ) {
         return flow;
       }
-    } else if (flow.trigger_type === "first_inbound_message" && isFirstInbound && !alreadyRouted) {
+    } else if (
+      flow.trigger_type === "first_inbound_message" &&
+      message.kind === "text" &&
+      isFirstInbound &&
+      !alreadyRouted
+    ) {
+      // Media deliberately never satisfies first_inbound_message, even
+      // when it genuinely is the contact's first-ever inbound message —
+      // that trigger is reserved for a real typed greeting.
       return flow;
     } else if (flow.trigger_type === "inbound_message" && !alreadyRouted) {
       // Same "not yet routed" gate as first_inbound_message, minus the
@@ -1024,6 +1040,21 @@ export async function dispatchInboundToFlows(
     // contact. For new runs, the partial unique index catches duplicate
     // starts at INSERT time.
     if (activeRun) {
+      // Media (image/document) is never a valid reply to anything a run
+      // can be waiting on — not a button/list tap, not free text for
+      // collect_input, not a queue_menu digit. Left to fall through to
+      // handleReplyForActiveRun, it would hit that function's generic
+      // "no match" fallback and spend a real reprompt_count/fallback_fired
+      // cycle (possibly reprompting or even handing off/ending the run)
+      // over a message that was never an attempted reply at all. Bail
+      // out here, before touching the run or the dedupe check below —
+      // the run is left EXACTLY as it was; the caller's own webhook
+      // route decides separately (never through this function) whether
+      // the media should start a fresh entry, which only applies when
+      // there is no active run in the first place.
+      if (input.message.kind === "media") {
+        return { consumed: false, outcome: "no_match" };
+      }
       const dupe = await isDuplicateInbound(
         db,
         input.accountId,

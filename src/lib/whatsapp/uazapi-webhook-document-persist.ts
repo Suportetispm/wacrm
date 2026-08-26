@@ -50,9 +50,25 @@ export interface PersistInboundDocumentMessageArgs {
   parsed: ParsedInboundDocumentMessage
 }
 
+/**
+ * Routing state re-read from `conversations` by primary key AFTER the
+ * RPC's own commit — migration 063 may have just cleared queue_id/
+ * assigned_agent_id if this document reopened a closed/finalized
+ * conversation, and the RPC itself only returns a status string, not
+ * the row. `null` means the re-read itself failed or found no row —
+ * NOT "confirmed unrouted". The caller (the UAZAPI webhook route) must
+ * treat `routingState: null` as "unknown — do not start a Flow for this
+ * message", never default it to an empty/unrouted state. See
+ * `persistInboundTextMessage` in `uazapi-webhook-persist.ts` for the
+ * same pattern on the text path.
+ */
+export interface RoutingState {
+  queueId: string | null
+  assignedAgentId: string | null
+}
+
 export type PersistInboundDocumentOutcome =
-  | { outcome: 'persisted' }
-  | { outcome: 'duplicate' }
+  | { outcome: 'persisted' | 'duplicate'; contactId: string; conversationId: string; routingState: RoutingState | null }
   | {
       outcome: 'error'
       code:
@@ -245,7 +261,15 @@ export async function persistInboundDocumentMessage({
     )
     // Not fatal — fall through, the RPC still guards correctness.
   } else if (existingRow) {
-    return { outcome: 'duplicate' }
+    // Known-duplicate short-circuit, before the RPC ever runs — no
+    // routing state to confirm here (nothing was written), and it's
+    // moot anyway: the route never dispatches to Flows on 'duplicate'.
+    return {
+      outcome: 'duplicate',
+      contactId: contact.id as string,
+      conversationId: conversation.id as string,
+      routingState: null,
+    }
   }
 
   let downloadResult: Awaited<ReturnType<typeof downloadMessageMedia>>
@@ -383,8 +407,42 @@ export async function persistInboundDocumentMessage({
       return { outcome: 'error', code: 'database_failed' }
     }
 
-    if (rpcResult === 'persisted') return { outcome: 'persisted' }
-    if (rpcResult === 'duplicate') return { outcome: 'duplicate' }
+    if (rpcResult === 'persisted' || rpcResult === 'duplicate') {
+      // One cheap indexed SELECT by primary key, immediately after the
+      // RPC's own commit — negligible race window (same request, same
+      // row). A failed or empty re-read yields `routingState: null`;
+      // it is never defaulted to `{ queueId: null, assignedAgentId: null }`,
+      // which would be indistinguishable from a CONFIRMED unrouted
+      // conversation and could let a Flow start on one that is actually
+      // still routed/assigned.
+      const { data: freshConversation, error: rereadError } = await db
+        .from('conversations')
+        .select('queue_id, assigned_agent_id')
+        .eq('id', conversation.id)
+        .maybeSingle()
+
+      const routingState: RoutingState | null =
+        !rereadError && freshConversation
+          ? {
+              queueId: (freshConversation.queue_id as string | null) ?? null,
+              assignedAgentId: (freshConversation.assigned_agent_id as string | null) ?? null,
+            }
+          : null
+
+      if (rereadError) {
+        console.error(
+          '[uazapi/webhook:document-persist] post-RPC routing re-read failed:',
+          classifyDatabaseError(rereadError),
+        )
+      }
+
+      return {
+        outcome: rpcResult,
+        contactId: contact.id as string,
+        conversationId: conversation.id as string,
+        routingState,
+      }
+    }
 
     console.error('[uazapi/webhook:document-persist] rpc returned an unexpected value')
     return { outcome: 'error', code: 'database_failed' }

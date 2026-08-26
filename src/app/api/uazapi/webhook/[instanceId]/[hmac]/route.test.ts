@@ -15,6 +15,16 @@ const mocks = vi.hoisted(() => ({
   persistInboundImageMessage: vi.fn(),
   decrypt: vi.fn(),
   isAccountActive: vi.fn(),
+  dispatchInboundToFlows: vi.fn(async () => ({ consumed: false, outcome: 'no_match' as const })),
+}))
+
+// Mocked so the media-dispatch tests below can assert on call/no-call and
+// args directly, instead of the real engine silently swallowing every
+// call via the route's own defensive try/catch (its `isAccountActive`
+// would otherwise hit `.from('accounts')`, which the admin-client mock
+// below doesn't model and would throw on).
+vi.mock('@/lib/flows/engine', () => ({
+  dispatchInboundToFlows: mocks.dispatchInboundToFlows,
 }))
 
 vi.mock('@/lib/whatsapp/uazapi-webhook-auth', () => ({
@@ -145,6 +155,8 @@ beforeEach(() => {
   mocks.decrypt.mockReturnValue('fixture-decrypted-token')
   mocks.isAccountActive.mockReset()
   mocks.isAccountActive.mockResolvedValue(true)
+  mocks.dispatchInboundToFlows.mockClear()
+  mocks.dispatchInboundToFlows.mockResolvedValue({ consumed: false, outcome: 'no_match' })
   tokenLookupResult = { data: { uazapi_instance_token: 'fixture-ciphertext' }, error: null }
 })
 
@@ -581,6 +593,253 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — image path', () => {
 
     logSpy.mockRestore()
     errorSpy.mockRestore()
+  })
+})
+
+// Media (image/document) as a Flow trigger for "nova entrada de
+// atendimento" — see engine.ts's `dispatchInboundToFlows` active-run
+// guard and `findEntryFlow`'s kind gating for the engine-side half of
+// this. This block covers the route-side half: dispatch is called only
+// for a genuinely new ('persisted', never 'duplicate') message, and only
+// when the post-RPC routingState was actually confirmed — never on
+// `routingState: null`, which means "unknown", not "unrouted".
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — media as a Flow trigger', () => {
+  const CONFIRMED_UNROUTED = { queueId: null, assignedAgentId: null }
+
+  describe('document', () => {
+    beforeEach(() => {
+      mocks.parseInboundTextMessage.mockReturnValue(null)
+    })
+    function documentRequest() {
+      return request({ EventType: 'messages', message: { messageType: 'DocumentMessage', type: 'media' } })
+    }
+
+    it('dispatches kind:"media", media_type:"document" with the confirmed post-RPC routing state', async () => {
+      mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
+      mocks.persistInboundDocumentMessage.mockResolvedValue({
+        outcome: 'persisted',
+        contactId: 'contact-1',
+        conversationId: 'conv-1',
+        routingState: CONFIRMED_UNROUTED,
+      })
+
+      await POST(documentRequest(), params)
+
+      expect(mocks.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+      expect(mocks.dispatchInboundToFlows).toHaveBeenCalledWith({
+        accountId: CONFIG_ROW.account_id,
+        userId: CONFIG_ROW.user_id,
+        contactId: 'contact-1',
+        conversationId: 'conv-1',
+        queueId: null,
+        assignedAgentId: null,
+        message: {
+          kind: 'media',
+          media_type: 'document',
+          meta_message_id: PARSED_DOCUMENT_FIXTURE.providerMessageId,
+        },
+        isFirstInboundMessage: false,
+      })
+    })
+
+    it('does NOT dispatch when routingState is null (post-RPC re-read failed — fail-safe)', async () => {
+      mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
+      mocks.persistInboundDocumentMessage.mockResolvedValue({
+        outcome: 'persisted',
+        contactId: 'contact-1',
+        conversationId: 'conv-1',
+        routingState: null,
+      })
+
+      const res = await POST(documentRequest(), params)
+
+      expect(res.status).toBe(200) // message IS persisted — no retry storm
+      expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+    })
+
+    it('does NOT dispatch on a duplicate (redelivery)', async () => {
+      mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
+      mocks.persistInboundDocumentMessage.mockResolvedValue({
+        outcome: 'duplicate',
+        contactId: 'contact-1',
+        conversationId: 'conv-1',
+        routingState: CONFIRMED_UNROUTED,
+      })
+
+      await POST(documentRequest(), params)
+
+      expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+    })
+
+    it('does NOT dispatch on a persistence error', async () => {
+      mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
+      mocks.persistInboundDocumentMessage.mockResolvedValue({ outcome: 'error', code: 'database_failed' })
+
+      await POST(documentRequest(), params)
+
+      expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('image', () => {
+    beforeEach(() => {
+      mocks.parseInboundTextMessage.mockReturnValue(null)
+      mocks.parseInboundDocumentMessage.mockReturnValue(null)
+    })
+    function imageRequest() {
+      return request({ EventType: 'messages', message: { messageType: 'ImageMessage', type: 'media' } })
+    }
+
+    it('dispatches kind:"media", media_type:"image" with the confirmed post-RPC routing state', async () => {
+      mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+      mocks.persistInboundImageMessage.mockResolvedValue({
+        outcome: 'persisted',
+        contactId: 'contact-2',
+        conversationId: 'conv-2',
+        routingState: CONFIRMED_UNROUTED,
+      })
+
+      await POST(imageRequest(), params)
+
+      expect(mocks.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+      expect(mocks.dispatchInboundToFlows).toHaveBeenCalledWith({
+        accountId: CONFIG_ROW.account_id,
+        userId: CONFIG_ROW.user_id,
+        contactId: 'contact-2',
+        conversationId: 'conv-2',
+        queueId: null,
+        assignedAgentId: null,
+        message: {
+          kind: 'media',
+          media_type: 'image',
+          meta_message_id: PARSED_IMAGE_FIXTURE.providerMessageId,
+        },
+        isFirstInboundMessage: false,
+      })
+    })
+
+    it('does NOT dispatch when routingState is null (post-RPC re-read failed — fail-safe)', async () => {
+      mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+      mocks.persistInboundImageMessage.mockResolvedValue({
+        outcome: 'persisted',
+        contactId: 'contact-2',
+        conversationId: 'conv-2',
+        routingState: null,
+      })
+
+      const res = await POST(imageRequest(), params)
+
+      expect(res.status).toBe(200)
+      expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+    })
+
+    it('does NOT dispatch on a duplicate (redelivery)', async () => {
+      mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+      mocks.persistInboundImageMessage.mockResolvedValue({
+        outcome: 'duplicate',
+        contactId: 'contact-2',
+        conversationId: 'conv-2',
+        routingState: CONFIRMED_UNROUTED,
+      })
+
+      await POST(imageRequest(), params)
+
+      expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+    })
+
+    it('does NOT dispatch on a persistence error', async () => {
+      mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+      mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'error', code: 'upload_failed' })
+
+      await POST(imageRequest(), params)
+
+      expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+    })
+  })
+})
+
+// Same routingState fail-safe gating as image/document above, now
+// applied to the text path too (uazapi-webhook-persist.ts's post-RPC
+// re-read). Pendency #2 from the previous implementation: the text
+// path used to default a failed re-read to `{queueId:null,
+// assignedAgentId:null}` instead of refusing to dispatch.
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — text: routingState fail-safe gating', () => {
+  function textRequest() {
+    return request()
+  }
+
+  it('dispatches kind:"text" with the confirmed post-RPC routing state', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue({
+      externalMessageId: 'ext-1',
+      phone: '551199999999',
+      name: 'Fixture',
+      text: 'hi',
+      occurredAt: '2026-01-01T00:00:00.000Z',
+    })
+    mocks.persistInboundTextMessage.mockResolvedValue({
+      outcome: 'persisted',
+      contactId: 'contact-1',
+      conversationId: 'conv-1',
+      routingState: { queueId: null, assignedAgentId: null },
+      isFirstInboundMessage: true,
+    })
+
+    await POST(textRequest(), params)
+
+    expect(mocks.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect(mocks.dispatchInboundToFlows).toHaveBeenCalledWith({
+      accountId: CONFIG_ROW.account_id,
+      userId: CONFIG_ROW.user_id,
+      contactId: 'contact-1',
+      conversationId: 'conv-1',
+      queueId: null,
+      assignedAgentId: null,
+      message: { kind: 'text', text: 'hi', meta_message_id: 'ext-1' },
+      isFirstInboundMessage: true,
+    })
+  })
+
+  it('does NOT dispatch when routingState is null (post-RPC re-read failed — fail-safe)', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue({
+      externalMessageId: 'ext-1',
+      phone: '551199999999',
+      name: 'Fixture',
+      text: 'hi',
+      occurredAt: '2026-01-01T00:00:00.000Z',
+    })
+    mocks.persistInboundTextMessage.mockResolvedValue({
+      outcome: 'persisted',
+      contactId: 'contact-1',
+      conversationId: 'conv-1',
+      routingState: null,
+      isFirstInboundMessage: true,
+    })
+
+    const res = await POST(textRequest(), params)
+
+    expect(res.status).toBe(200) // message IS persisted — no retry storm
+    expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+
+  it('does NOT dispatch on a duplicate (redelivery), even with a confirmed routingState', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue({
+      externalMessageId: 'ext-1',
+      phone: '551199999999',
+      name: 'Fixture',
+      text: 'hi',
+      occurredAt: '2026-01-01T00:00:00.000Z',
+    })
+    mocks.persistInboundTextMessage.mockResolvedValue({
+      outcome: 'duplicate',
+      contactId: 'contact-1',
+      conversationId: 'conv-1',
+      routingState: { queueId: null, assignedAgentId: null },
+      isFirstInboundMessage: true,
+    })
+
+    await POST(textRequest(), params)
+
+    expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
   })
 })
 

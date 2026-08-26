@@ -23,6 +23,19 @@ interface DbState {
   rpcError: { code: string } | null
   /** Prior customer-message count on the conversation — drives isFirstInboundMessage. */
   priorCustomerMsgCount: number
+  /**
+   * What the post-RPC `.select('queue_id, assigned_agent_id').eq('id', ...).maybeSingle()`
+   * re-read returns — migration 063's cleanup happens inside the RPC
+   * itself (never exercised here, no real Postgres in this file), so
+   * this is how a test simulates "the RPC already cleared routing
+   * because the conversation was closed/finalized". `null` simulates
+   * the re-read finding no row (should not happen, but never assumed
+   * unrouted — see `rereadError` below for the other fail-safe case).
+   */
+  freshConversation: { queue_id: string | null; assigned_agent_id: string | null } | null
+  /** When set, the post-RPC re-read itself errors — routingState must
+   *  come back `null`, never a fabricated `{queueId:null,...}`. */
+  rereadError: { code: string } | null
 }
 
 function defaultState(overrides: Partial<DbState> = {}): DbState {
@@ -34,6 +47,8 @@ function defaultState(overrides: Partial<DbState> = {}): DbState {
     rpcData: 'persisted',
     rpcError: null,
     priorCustomerMsgCount: 0,
+    freshConversation: { queue_id: null, assigned_agent_id: null },
+    rereadError: null,
     ...overrides,
   }
 }
@@ -75,6 +90,11 @@ function makeDb(state: DbState) {
           ? { data: null, error: state.conversationInsertError }
           : { data: conversationAfterInsert, error: null },
       ),
+    )
+    // Post-RPC re-read (migration 063) — `.select('queue_id, assigned_agent_id').eq('id', ...).maybeSingle()`.
+    // Only this call path uses `.maybeSingle()`; the find-or-create lookup above is thenable instead.
+    b.maybeSingle = vi.fn(() =>
+      Promise.resolve({ data: state.rereadError ? null : state.freshConversation, error: state.rereadError }),
     )
     b.then = (resolve: (v: unknown) => unknown) =>
       resolve({
@@ -120,8 +140,7 @@ describe('persistInboundTextMessage', () => {
       outcome: 'persisted',
       contactId: 'contact-new',
       conversationId: 'conv-new',
-      queueId: null,
-      assignedAgentId: null,
+      routingState: { queueId: null, assignedAgentId: null },
       isFirstInboundMessage: true,
     })
     expect(rpc).toHaveBeenCalledWith('uazapi_persist_inbound_text_message', {
@@ -139,8 +158,7 @@ describe('persistInboundTextMessage', () => {
       outcome: 'duplicate',
       contactId: 'contact-new',
       conversationId: 'conv-new',
-      queueId: null,
-      assignedAgentId: null,
+      routingState: { queueId: null, assignedAgentId: null },
       isFirstInboundMessage: true,
     })
   })
@@ -193,8 +211,7 @@ describe('persistInboundTextMessage', () => {
       outcome: 'persisted',
       contactId: 'contact-existing',
       conversationId: 'conv-existing',
-      queueId: null,
-      assignedAgentId: null,
+      routingState: { queueId: null, assignedAgentId: null },
       isFirstInboundMessage: true,
     })
     expect(rpc).toHaveBeenCalledWith(
@@ -227,5 +244,113 @@ describe('persistInboundTextMessage', () => {
       (c: unknown[]) => c[0] === 'contacts',
     )
     expect(contactsCalls.length).toBeGreaterThanOrEqual(3) // lookup, insert, re-lookup
+  })
+
+  // Migration 063: a message arriving on a closed/finalized conversation
+  // may have just had its queue_id/assigned_agent_id cleared by the RPC
+  // itself (new service entry). These prove the returned outcome reflects
+  // that POST-reopen state, not the conversation object read before the
+  // RPC ran — the exact bug this migration fixes.
+  describe('post-reopen routing state (migration 063)', () => {
+    it('returns queueId/assignedAgentId null when the RPC cleared them, even though the pre-RPC conversation object still had them set', async () => {
+      const { db } = makeDb(
+        defaultState({
+          existingContact: { id: 'contact-existing', account_id: 'acct-1', phone: PARSED.phone },
+          existingConversation: {
+            id: 'conv-existing',
+            account_id: 'acct-1',
+            contact_id: 'contact-existing',
+            // Stale values as read BEFORE the RPC ran — closed conversation
+            // routed by an old Flow. The RPC clears these server-side; the
+            // fresh re-read below is what the outcome must reflect.
+            queue_id: 'queue-old',
+            assigned_agent_id: 'agent-old',
+            status: 'closed',
+          },
+          freshConversation: { queue_id: null, assigned_agent_id: null },
+        }),
+      )
+      const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+      expect(result).toMatchObject({
+        outcome: 'persisted',
+        conversationId: 'conv-existing',
+        routingState: { queueId: null, assignedAgentId: null },
+      })
+    })
+
+    it('still reports a routed conversation (pending/in_progress, ticket present, etc.) when the RPC did NOT clear routing', async () => {
+      const { db } = makeDb(
+        defaultState({
+          existingContact: { id: 'contact-existing', account_id: 'acct-1', phone: PARSED.phone },
+          existingConversation: {
+            id: 'conv-existing',
+            account_id: 'acct-1',
+            contact_id: 'contact-existing',
+            queue_id: 'queue-current',
+            assigned_agent_id: 'agent-current',
+            status: 'in_progress',
+          },
+          // Conversation was never closed/finalized (or has a ticket) —
+          // the RPC's CASE never fires, routing stays exactly as-is.
+          freshConversation: { queue_id: 'queue-current', assigned_agent_id: 'agent-current' },
+        }),
+      )
+      const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+      expect(result).toMatchObject({
+        outcome: 'persisted',
+        routingState: { queueId: 'queue-current', assignedAgentId: 'agent-current' },
+      })
+    })
+
+    it('FAIL-SAFE: returns routingState:null (never a fabricated {queueId:null,...}) when the post-RPC re-read itself errors', async () => {
+      const { db } = makeDb(
+        defaultState({
+          existingContact: { id: 'contact-existing', account_id: 'acct-1', phone: PARSED.phone },
+          existingConversation: {
+            id: 'conv-existing',
+            account_id: 'acct-1',
+            contact_id: 'contact-existing',
+            queue_id: 'queue-current',
+            assigned_agent_id: 'agent-current',
+            status: 'in_progress',
+          },
+          rereadError: { code: '57014' },
+        }),
+      )
+      const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+      expect(result).toMatchObject({ outcome: 'persisted', routingState: null })
+    })
+
+    it('FAIL-SAFE: returns routingState:null when the re-read finds no row (should not happen, but never assumed unrouted)', async () => {
+      const { db } = makeDb(
+        defaultState({
+          existingContact: { id: 'contact-existing', account_id: 'acct-1', phone: PARSED.phone },
+          existingConversation: {
+            id: 'conv-existing',
+            account_id: 'acct-1',
+            contact_id: 'contact-existing',
+            queue_id: 'queue-current',
+            assigned_agent_id: 'agent-current',
+          },
+          freshConversation: null,
+        }),
+      )
+      const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+      expect(result).toMatchObject({ outcome: 'persisted', routingState: null })
+    })
+
+    it('normal text behavior is otherwise unchanged: an unrouted conversation with confirmed routingState still lets the caller dispatch a fresh triage', async () => {
+      const { db } = makeDb(
+        defaultState({
+          freshConversation: { queue_id: null, assigned_agent_id: null },
+        }),
+      )
+      const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+      expect(result).toMatchObject({
+        outcome: 'persisted',
+        routingState: { queueId: null, assignedAgentId: null },
+        isFirstInboundMessage: true,
+      })
+    })
   })
 })

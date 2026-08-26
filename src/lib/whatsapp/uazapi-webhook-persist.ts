@@ -28,27 +28,42 @@ export interface PersistInboundTextMessageArgs {
 }
 
 /**
- * `contactId`/`conversationId`/`queueId`/`assignedAgentId`/
- * `isFirstInboundMessage` on the success outcomes are what let the
- * route dispatch to Flows (`dispatchInboundToFlows`) with the same
- * shape of data the Meta webhook already provides — see
- * `src/app/api/whatsapp/webhook/route.ts` for the parallel logic.
+ * Routing state re-read from `conversations` by primary key AFTER the
+ * RPC's own commit — migration 063 may have just cleared queue_id/
+ * assigned_agent_id if this message reopened a closed/finalized
+ * conversation, and the RPC itself only returns a status string, not
+ * the row. `null` means the re-read itself failed or found no row —
+ * NOT "confirmed unrouted". The caller (the UAZAPI webhook route) must
+ * treat `routingState: null` as "unknown — do not start a Flow for this
+ * message", never default it to an empty/unrouted state. Same shape
+ * and same rationale as `RoutingState` in
+ * `uazapi-webhook-image-persist.ts` / `uazapi-webhook-document-persist.ts`.
+ */
+export interface RoutingState {
+  queueId: string | null
+  assignedAgentId: string | null
+}
+
+/**
+ * `contactId`/`conversationId`/`routingState`/`isFirstInboundMessage`
+ * on the success outcomes are what let the route dispatch to Flows
+ * (`dispatchInboundToFlows`) with the same shape of data the Meta
+ * webhook already provides — see `src/app/api/whatsapp/webhook/route.ts`
+ * for the parallel logic.
  */
 export type PersistInboundOutcome =
   | {
       outcome: 'persisted'
       contactId: string
       conversationId: string
-      queueId: string | null
-      assignedAgentId: string | null
+      routingState: RoutingState | null
       isFirstInboundMessage: boolean
     }
   | {
       outcome: 'duplicate'
       contactId: string
       conversationId: string
-      queueId: string | null
-      assignedAgentId: string | null
+      routingState: RoutingState | null
       isFirstInboundMessage: boolean
     }
   | { outcome: 'error'; code: 'contact_failed' | 'conversation_failed' | 'database_failed' }
@@ -127,14 +142,6 @@ export async function persistInboundTextMessage({
     .eq('sender_type', 'customer')
   const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
 
-  const outcomeFields = {
-    contactId: contact.id as string,
-    conversationId: conversation.id as string,
-    queueId: (conversation.queue_id as string | null) ?? null,
-    assignedAgentId: (conversation.assigned_agent_id as string | null) ?? null,
-    isFirstInboundMessage,
-  }
-
   const { data, error } = await db.rpc('uazapi_persist_inbound_text_message', {
     p_conversation_id: conversation.id,
     p_message_id: parsed.externalMessageId,
@@ -148,6 +155,44 @@ export async function persistInboundTextMessage({
     // classification below is diagnostic-only, log-side.
     console.error('[uazapi/webhook:persist] rpc failed:', classifyDatabaseError(error))
     return { outcome: 'error', code: 'database_failed' }
+  }
+
+  // Migration 063: the RPC may have just cleared queue_id/
+  // assigned_agent_id (conversation was closed/finalized — "new
+  // service entry"). `conversation` above still holds the PRE-reopen
+  // values, so a stale read here would keep the Flow runner seeing
+  // `alreadyRouted = true` forever. The RPC only returns a status
+  // string (not the row), so the fresh values are re-read by primary
+  // key — one cheap indexed SELECT, immediately after the RPC's own
+  // commit, negligible race window (same request, same row). A failed
+  // or empty re-read yields `routingState: null` — it is never
+  // defaulted to `{ queueId: null, assignedAgentId: null }`, which
+  // would be indistinguishable from a CONFIRMED unrouted conversation
+  // and could let a Flow (re)start on one that is actually still
+  // routed/assigned. Same pattern as the image/document persist paths.
+  const { data: freshConversation, error: rereadError } = await db
+    .from('conversations')
+    .select('queue_id, assigned_agent_id')
+    .eq('id', conversation.id)
+    .maybeSingle()
+
+  const routingState: RoutingState | null =
+    !rereadError && freshConversation
+      ? {
+          queueId: (freshConversation.queue_id as string | null) ?? null,
+          assignedAgentId: (freshConversation.assigned_agent_id as string | null) ?? null,
+        }
+      : null
+
+  if (rereadError) {
+    console.error('[uazapi/webhook:persist] post-RPC routing re-read failed:', classifyDatabaseError(rereadError))
+  }
+
+  const outcomeFields = {
+    contactId: contact.id as string,
+    conversationId: conversation.id as string,
+    routingState,
+    isFirstInboundMessage,
   }
 
   if (data === 'persisted') return { outcome: 'persisted', ...outcomeFields }

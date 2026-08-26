@@ -403,6 +403,22 @@ export type ParsedInbound =
       /** The visible title of the tapped option (for logging). */
       reply_title: string;
       meta_message_id: string;
+    }
+  | {
+      /**
+       * An image or document, carrying no free-text/reply-id content the
+       * runner can act on. Deliberately its own kind rather than a
+       * synthesized `kind: "text"` with a placeholder string (no
+       * "[imagem]"/"[documento]" anywhere) — a real discriminant lets
+       * `findEntryFlow` and `dispatchInboundToFlows` refuse, at the type
+       * level, to ever treat it as a keyword match or a reply to an
+       * active run. See `findEntryFlow`'s trigger loop and the
+       * active-run branch of `dispatchInboundToFlows` for where this
+       * matters.
+       */
+      kind: "media";
+      media_type: "image" | "document";
+      meta_message_id: string;
     };
 
 export interface DispatchInboundInput {

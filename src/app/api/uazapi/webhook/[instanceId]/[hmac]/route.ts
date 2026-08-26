@@ -153,23 +153,29 @@ export async function POST(
       instanceId: maskInstanceId(instanceId),
     })
 
-    // Flow dispatch — only for a genuinely new message. A 'duplicate'
-    // (UAZAPI retry) must never re-enter/re-advance a run a second
-    // time for the same event. dispatchInboundToFlows never throws
-    // (its own internal try/catch), but this is wrapped defensively
-    // anyway — same convention already used for
-    // ensureUazapiWebhookRegistered in the connect/status routes.
-    // Never affects the response below, and never logs message
-    // content/tokens/payloads.
-    if (result.outcome === 'persisted') {
+    // Flow dispatch — only for a genuinely new message ('persisted',
+    // never 'duplicate' — a UAZAPI retry must never re-enter/re-advance
+    // a run a second time for the same event) AND only when the
+    // post-RPC routingState was actually confirmed (see RoutingState's
+    // docstring in uazapi-webhook-persist.ts: `null` means "unknown",
+    // never "unrouted" — dispatching on an unconfirmed state could
+    // start a Flow on a conversation that's actually still routed/
+    // assigned). The message is already safely persisted either way —
+    // a missing routingState only skips the Flow side effect, never the
+    // 200 response below. dispatchInboundToFlows never throws (its own
+    // internal try/catch), but this is wrapped defensively anyway —
+    // same convention already used for ensureUazapiWebhookRegistered in
+    // the connect/status routes. Never affects the response below, and
+    // never logs message content/tokens/payloads.
+    if (result.outcome === 'persisted' && result.routingState) {
       try {
         await dispatchInboundToFlows({
           accountId: config.account_id,
           userId: config.user_id,
           contactId: result.contactId,
           conversationId: result.conversationId,
-          queueId: result.queueId,
-          assignedAgentId: result.assignedAgentId,
+          queueId: result.routingState.queueId,
+          assignedAgentId: result.routingState.assignedAgentId,
           message: {
             kind: 'text',
             text: parsedMessage.text,
@@ -232,6 +238,39 @@ export async function POST(
       instanceId: maskInstanceId(instanceId),
     })
 
+    // Flow dispatch — only for a genuinely new message ('persisted', not
+    // 'duplicate') AND only when the post-RPC routing state was actually
+    // confirmed (see RoutingState's docstring: `null` means "unknown",
+    // never "unrouted" — starting a Flow on an unconfirmed state could
+    // re-trigger triage on a conversation that's actually still routed/
+    // assigned). isFirstInboundMessage is hardcoded false: media must
+    // never satisfy first_inbound_message (engine.ts's findEntryFlow
+    // already enforces this too — belt and suspenders, never trust a
+    // single layer for this).
+    if (documentResult.outcome === 'persisted' && documentResult.routingState) {
+      try {
+        await dispatchInboundToFlows({
+          accountId: config.account_id,
+          userId: config.user_id,
+          contactId: documentResult.contactId,
+          conversationId: documentResult.conversationId,
+          queueId: documentResult.routingState.queueId,
+          assignedAgentId: documentResult.routingState.assignedAgentId,
+          message: {
+            kind: 'media',
+            media_type: 'document',
+            meta_message_id: parsedDocument.providerMessageId,
+          },
+          isFirstInboundMessage: false,
+        })
+      } catch (err) {
+        console.error(
+          '[uazapi/webhook:flows] dispatchInboundToFlows threw unexpectedly (document):',
+          err instanceof Error ? err.name : 'UnknownError',
+        )
+      }
+    }
+
     return NextResponse.json({ status: documentResult.outcome, type: 'document' }, { status: 200 })
   }
 
@@ -274,6 +313,33 @@ export async function POST(
     console.log('[uazapi/webhook:image-persist]', imageResult.outcome, {
       instanceId: maskInstanceId(instanceId),
     })
+
+    // Flow dispatch — same gating as the document path above: only
+    // 'persisted' (never 'duplicate'), and only with a confirmed
+    // post-RPC routingState.
+    if (imageResult.outcome === 'persisted' && imageResult.routingState) {
+      try {
+        await dispatchInboundToFlows({
+          accountId: config.account_id,
+          userId: config.user_id,
+          contactId: imageResult.contactId,
+          conversationId: imageResult.conversationId,
+          queueId: imageResult.routingState.queueId,
+          assignedAgentId: imageResult.routingState.assignedAgentId,
+          message: {
+            kind: 'media',
+            media_type: 'image',
+            meta_message_id: parsedImage.providerMessageId,
+          },
+          isFirstInboundMessage: false,
+        })
+      } catch (err) {
+        console.error(
+          '[uazapi/webhook:flows] dispatchInboundToFlows threw unexpectedly (image):',
+          err instanceof Error ? err.name : 'UnknownError',
+        )
+      }
+    }
 
     return NextResponse.json({ status: imageResult.outcome, type: 'image' }, { status: 200 })
   }

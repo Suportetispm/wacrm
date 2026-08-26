@@ -141,8 +141,19 @@ const OTHER_ACCOUNT_ID = '99999999-9999-9999-9999-999999999999'
 const NEW_CONTACT_ROW = { id: CONTACT_ID, account_id: ACCOUNT_ID, phone: '5591999999999' }
 const NEW_CONVERSATION_ROW = { id: CONVERSATION_ID, account_id: ACCOUNT_ID, contact_id: CONTACT_ID }
 
-/** Queues for "no existing contact/conversation, both get created". */
-function freshEntityQueues() {
+/** Migration 063's routing-cleanup CASE never fires for a brand-new
+ *  conversation (it was never routed to begin with) — this is the
+ *  realistic post-RPC re-read result for every `freshEntityQueues()`
+ *  happy-path test below. */
+const CONFIRMED_UNROUTED = { queueId: null, assignedAgentId: null }
+
+/**
+ * Queues for "no existing contact/conversation, both get created", PLUS
+ * a third `conversations` response for the post-RPC routing re-read
+ * (`.select('queue_id, assigned_agent_id').eq('id', ...).maybeSingle()`)
+ * that only runs after the RPC itself resolves to 'persisted'/'duplicate'.
+ */
+function freshEntityQueues(rereadResponse: TableResponse = { data: { queue_id: null, assigned_agent_id: null }, error: null }) {
   return {
     contactsQueue: [
       { data: [], error: null },
@@ -151,6 +162,7 @@ function freshEntityQueues() {
     conversationsQueue: [
       { data: [], error: null },
       { data: NEW_CONVERSATION_ROW, error: null },
+      rereadResponse, // post-RPC routing re-read
     ],
   }
 }
@@ -175,7 +187,12 @@ describe('persistInboundImageMessage — happy path', () => {
 
     const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
 
-    expect(result).toEqual({ outcome: 'persisted' })
+    expect(result).toEqual({
+      outcome: 'persisted',
+      contactId: CONTACT_ID,
+      conversationId: CONVERSATION_ID,
+      routingState: CONFIRMED_UNROUTED,
+    })
     expect(downloadMock).toHaveBeenCalledWith({
       instanceToken: 'test-instance-token',
       id: 'download-id-456',
@@ -207,7 +224,7 @@ describe('persistInboundImageMessage — happy path', () => {
       ...ARGS_BASE,
       parsed: baseParsed({ mimeType: 'image/png', fileName: 'image.png' }),
     })
-    expect(pngResult).toEqual({ outcome: 'persisted' })
+    expect(pngResult).toMatchObject({ outcome: 'persisted' })
     expect(dbPng.__mocks.rpc.mock.calls[0][1].p_media_metadata.format).toBe('png')
 
     downloadMock.mockResolvedValueOnce({ base64Data: VALID_WEBP_BASE64 })
@@ -217,7 +234,7 @@ describe('persistInboundImageMessage — happy path', () => {
       ...ARGS_BASE,
       parsed: baseParsed({ mimeType: 'image/webp', fileName: 'image.webp' }),
     })
-    expect(webpResult).toEqual({ outcome: 'persisted' })
+    expect(webpResult).toMatchObject({ outcome: 'persisted' })
     expect(dbWebp.__mocks.rpc.mock.calls[0][1].p_media_metadata.format).toBe('webp')
   })
 
@@ -258,7 +275,14 @@ describe('persistInboundImageMessage — known duplicate (no new upload)', () =>
 
     const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
 
-    expect(result).toEqual({ outcome: 'duplicate' })
+    // Known-duplicate short-circuit, before the RPC ever runs — no
+    // routing state to confirm (nothing was written this time).
+    expect(result).toEqual({
+      outcome: 'duplicate',
+      contactId: CONTACT_ID,
+      conversationId: CONVERSATION_ID,
+      routingState: null,
+    })
     expect(downloadMock).not.toHaveBeenCalled()
     expect(db.__mocks.upload).not.toHaveBeenCalled()
     expect(db.__mocks.rpc).not.toHaveBeenCalled()
@@ -356,7 +380,12 @@ describe('persistInboundImageMessage — upload failures', () => {
 
     const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
 
-    expect(result).toEqual({ outcome: 'persisted' })
+    expect(result).toEqual({
+      outcome: 'persisted',
+      contactId: CONTACT_ID,
+      conversationId: CONVERSATION_ID,
+      routingState: CONFIRMED_UNROUTED,
+    })
     expect(db.__mocks.rpc).toHaveBeenCalledTimes(1)
   })
 })
@@ -423,8 +452,66 @@ describe('persistInboundImageMessage — RPC failure and cleanup (concurrency-sa
 
     const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
 
-    expect(result).toEqual({ outcome: 'duplicate' })
+    expect(result).toEqual({
+      outcome: 'duplicate',
+      contactId: CONTACT_ID,
+      conversationId: CONVERSATION_ID,
+      routingState: CONFIRMED_UNROUTED,
+    })
     expect(db.__mocks.remove).not.toHaveBeenCalled()
+  })
+})
+
+describe('persistInboundImageMessage — post-RPC routing state (migration 063 fail-safe)', () => {
+  it('reflects routing cleared by the RPC (conversation was closed/finalized) in the returned routingState', async () => {
+    downloadMock.mockResolvedValue({ base64Data: VALID_JPEG_BASE64 })
+    const db = createFakeDb({
+      ...freshEntityQueues({ data: { queue_id: null, assigned_agent_id: null }, error: null }),
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', routingState: { queueId: null, assignedAgentId: null } })
+  })
+
+  it('reflects routing the RPC did NOT touch (e.g. still in_progress/assigned) in the returned routingState', async () => {
+    downloadMock.mockResolvedValue({ base64Data: VALID_JPEG_BASE64 })
+    const db = createFakeDb({
+      ...freshEntityQueues({ data: { queue_id: 'queue-1', assigned_agent_id: 'agent-1' }, error: null }),
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({
+      outcome: 'persisted',
+      routingState: { queueId: 'queue-1', assignedAgentId: 'agent-1' },
+    })
+  })
+
+  it('FAIL-SAFE: returns routingState:null (never a fabricated {queueId:null,...}) when the post-RPC re-read itself errors', async () => {
+    downloadMock.mockResolvedValue({ base64Data: VALID_JPEG_BASE64 })
+    const db = createFakeDb({
+      ...freshEntityQueues({ data: null, error: { message: 'connection reset' } }),
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', routingState: null })
+  })
+
+  it('FAIL-SAFE: returns routingState:null when the re-read finds no row (should not happen, but never assumed unrouted)', async () => {
+    downloadMock.mockResolvedValue({ base64Data: VALID_JPEG_BASE64 })
+    const db = createFakeDb({
+      ...freshEntityQueues({ data: null, error: null }),
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', routingState: null })
   })
 })
 
@@ -595,6 +682,6 @@ describe('persistInboundImageMessage — LID never becomes a phone', () => {
 
     const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed })
 
-    expect(result).toEqual({ outcome: 'persisted' })
+    expect(result).toMatchObject({ outcome: 'persisted' })
   })
 })
