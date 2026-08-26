@@ -8,16 +8,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // old automations stay behind with the old account_id.
 
 const mocks = vi.hoisted(() => ({
-  getCurrentAccount: vi.fn(),
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/account', () => ({
-  getCurrentAccount: mocks.getCurrentAccount,
-  requireRole: mocks.requireRole,
   toErrorResponse: vi.fn((err: { status?: number; message?: string }) =>
     Response.json({ error: err?.message ?? 'error' }, { status: err?.status ?? 500 }),
   ),
+}))
+
+// GET usava getCurrentAccount() (automations.view era irrestrito);
+// PATCH/DELETE usavam requireRole("agent") (automations.manage). A
+// FASE 1 troca as três por requirePermission — para owner/admin/viewer
+// o resultado é idêntico (legacyHasPermission preserva o rank check de
+// antes).
+vi.mock('@/lib/auth/permission-guard', () => ({
+  requirePermission: mocks.requirePermission,
 }))
 
 type Row = Record<string, unknown>
@@ -136,14 +142,13 @@ function patchRequest(body: unknown) {
 }
 
 beforeEach(() => {
-  mocks.getCurrentAccount.mockReset()
-  mocks.requireRole.mockReset()
+  mocks.requirePermission.mockReset()
   mockAdmin.current = makeAdmin(createFakeAutomationsTable([{ ...ORIGINAL_ROW }]))
 })
 
 describe('GET /api/automations/[id]', () => {
   it('A: the owning user in the same account can read it', async () => {
-    mocks.getCurrentAccount.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const res = await GET(new Request('http://x'), params())
     expect(res.status).toBe(200)
     const json = await res.json()
@@ -151,19 +156,19 @@ describe('GET /api/automations/[id]', () => {
   })
 
   it('B: a user from a different account gets 404', async () => {
-    mocks.getCurrentAccount.mockResolvedValue(CTX_OTHER_ACCOUNT)
+    mocks.requirePermission.mockResolvedValue(CTX_OTHER_ACCOUNT)
     const res = await GET(new Request('http://x'), params())
     expect(res.status).toBe(404)
   })
 
   it('C: a removed ex-member (same user_id, new account) gets 404', async () => {
-    mocks.getCurrentAccount.mockResolvedValue(CTX_REMOVED_MEMBER)
+    mocks.requirePermission.mockResolvedValue(CTX_REMOVED_MEMBER)
     const res = await GET(new Request('http://x'), params())
     expect(res.status).toBe(404)
   })
 
   it('H: a nonexistent id and a cross-tenant id return the same sanitized 404', async () => {
-    mocks.getCurrentAccount.mockResolvedValue(CTX_OTHER_ACCOUNT)
+    mocks.requirePermission.mockResolvedValue(CTX_OTHER_ACCOUNT)
     const crossTenant = await GET(new Request('http://x'), params('auto-1'))
     const missing = await GET(new Request('http://x'), params('does-not-exist'))
     expect(await crossTenant.json()).toEqual(await missing.json())
@@ -173,26 +178,26 @@ describe('GET /api/automations/[id]', () => {
 
 describe('PATCH /api/automations/[id]', () => {
   it('A/J: the owning user in the same account can edit it', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const res = await PATCH(patchRequest({ name: 'Renamed' }), params())
     expect(res.status).toBe(200)
   })
 
   it('D: a removed ex-member cannot edit it, and the row is left untouched', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_REMOVED_MEMBER)
+    mocks.requirePermission.mockResolvedValue(CTX_REMOVED_MEMBER)
     const res = await PATCH(patchRequest({ name: 'Hijacked' }), params())
     expect(res.status).toBe(404)
     // Read back through a fresh GET as the real owner to confirm no mutation leaked.
-    mocks.getCurrentAccount.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const check = await GET(new Request('http://x'), params())
     const json = await check.json()
     expect(json.automation.name).toBe('Original')
   })
 
   it('I: a client-supplied account_id in the body is ignored', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     await PATCH(patchRequest({ name: 'Renamed', account_id: 'attacker-account' }), params())
-    mocks.getCurrentAccount.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const check = await GET(new Request('http://x'), params())
     const json = await check.json()
     expect(json.automation.account_id).toBe('acct-1')
@@ -202,18 +207,18 @@ describe('PATCH /api/automations/[id]', () => {
 
 describe('DELETE /api/automations/[id]', () => {
   it('A/J: the owning user in the same account can delete it', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const res = await DELETE(new Request('http://x'), params())
     expect(res.status).toBe(200)
-    mocks.getCurrentAccount.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const check = await GET(new Request('http://x'), params())
     expect((await check.json()).error).toBe('Not found')
   })
 
   it('E: a removed ex-member cannot delete it — the row survives', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_REMOVED_MEMBER)
+    mocks.requirePermission.mockResolvedValue(CTX_REMOVED_MEMBER)
     await DELETE(new Request('http://x'), params())
-    mocks.getCurrentAccount.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const check = await GET(new Request('http://x'), params())
     expect(check.status).toBe(200)
   })

@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/select";
 
 import type { ManagedAccountRole } from "@/lib/platform/users";
+import { UserPermissionsPanel } from "@/components/admin/user-permissions-panel";
 import {
   ROLE_LABEL_KEYS,
   buildAccountSelectItems,
@@ -756,6 +757,16 @@ function UserFormDialog({
                 }
               />
             </div>
+          )}
+
+          {/* FASE 1 de permissões (062_user_permission_overrides.sql):
+              gated no account_role JÁ SALVO de initialUser, nunca no
+              valor ainda não persistido de form.role — trocar o role
+              no dropdown acima e salvar é o único jeito de fazer esta
+              seção aparecer para quem virou agent agora (ver seção 6
+              do retorno da FASE 1). */}
+          {mode === "edit" && initialUser?.account_role === "agent" && (
+            <UserPermissionsPanel userId={initialUser.id} />
           )}
         </div>
 

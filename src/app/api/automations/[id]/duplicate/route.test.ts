@@ -1,15 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
   automationInsert: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/account', () => ({
-  requireRole: mocks.requireRole,
   toErrorResponse: vi.fn((err: { status?: number; message?: string }) =>
     Response.json({ error: err?.message ?? 'error' }, { status: err?.status ?? 500 }),
   ),
+}))
+
+// Usava requireRole("agent") (automations.manage) — a FASE 1 troca por
+// requirePermission; para owner/admin/viewer o resultado é idêntico
+// (legacyHasPermission preserva o rank check de antes).
+vi.mock('@/lib/auth/permission-guard', () => ({
+  requirePermission: mocks.requirePermission,
 }))
 
 type Row = Record<string, unknown>
@@ -85,14 +91,14 @@ function params(id = 'auto-1') {
 }
 
 beforeEach(() => {
-  mocks.requireRole.mockReset()
+  mocks.requirePermission.mockReset()
   mocks.automationInsert.mockReset()
   mockAdmin.current = makeAdmin({ ...ORIGINAL_ROW })
 })
 
 describe('POST /api/automations/[id]/duplicate', () => {
   it('G/J: the owning user can duplicate, and the clone is inserted into ctx.accountId', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_OWNER)
+    mocks.requirePermission.mockResolvedValue(CTX_OWNER)
     const res = await POST(new Request('http://x'), params())
     expect(res.status).toBe(201)
     expect(mocks.automationInsert).toHaveBeenCalledWith(
@@ -101,14 +107,14 @@ describe('POST /api/automations/[id]/duplicate', () => {
   })
 
   it('F: a removed ex-member cannot duplicate it — 404, nothing inserted', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_REMOVED_MEMBER)
+    mocks.requirePermission.mockResolvedValue(CTX_REMOVED_MEMBER)
     const res = await POST(new Request('http://x'), params())
     expect(res.status).toBe(404)
     expect(mocks.automationInsert).not.toHaveBeenCalled()
   })
 
   it('H: a nonexistent id and a cross-tenant id return the same sanitized 404', async () => {
-    mocks.requireRole.mockResolvedValue(CTX_OTHER_ACCOUNT)
+    mocks.requirePermission.mockResolvedValue(CTX_OTHER_ACCOUNT)
     const crossTenant = await POST(new Request('http://x'), params('auto-1'))
     const missing = await POST(new Request('http://x'), params('does-not-exist'))
     expect(await crossTenant.json()).toEqual(await missing.json())

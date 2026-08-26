@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
   adminUpdate: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/account', () => ({
-  requireRole: mocks.requireRole,
-  getCurrentAccount: vi.fn(),
   toErrorResponse: vi.fn((err: { status?: number; message?: string }) =>
     Response.json({ error: err?.message ?? 'error' }, { status: err?.status ?? 500 }),
   ),
+}))
+
+// PATCH usava requireRole("admin") (queues.manage) — a FASE 1 troca
+// por requirePermission; para owner/admin/viewer o resultado é
+// idêntico (legacyHasPermission preserva o rank check de antes).
+vi.mock('@/lib/auth/permission-guard', () => ({
+  requirePermission: mocks.requirePermission,
 }))
 
 vi.mock('@/lib/queues/admin-client', () => ({
@@ -84,20 +89,20 @@ function ctxWith(opts: {
 }
 
 beforeEach(() => {
-  mocks.requireRole.mockReset()
+  mocks.requirePermission.mockReset()
   mocks.adminUpdate.mockReset()
 })
 
 describe('PATCH /api/queues/[id] — lifecycle actions', () => {
   it('pauses without touching archived_at', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    mocks.requirePermission.mockResolvedValue(ctxWith({}))
     const res = await PATCH(patchRequest({ action: 'pause' }), params)
     expect(res.status).toBe(200)
     expect(mocks.adminUpdate).toHaveBeenCalledWith({ is_active: false })
   })
 
   it('archives with is_active=false and archived_at set', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    mocks.requirePermission.mockResolvedValue(ctxWith({}))
     const res = await PATCH(patchRequest({ action: 'archive' }), params)
     expect(res.status).toBe(200)
     expect(mocks.adminUpdate).toHaveBeenCalledWith(
@@ -106,14 +111,14 @@ describe('PATCH /api/queues/[id] — lifecycle actions', () => {
   })
 
   it('activates a paused (not archived) queue', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ archivedAt: null }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ archivedAt: null }))
     const res = await PATCH(patchRequest({ action: 'activate' }), params)
     expect(res.status).toBe(200)
     expect(mocks.adminUpdate).toHaveBeenCalledWith({ is_active: true })
   })
 
   it('refuses to reactivate an archived queue directly', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ archivedAt: '2026-01-01T00:00:00.000Z' }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ archivedAt: '2026-01-01T00:00:00.000Z' }))
     const res = await PATCH(patchRequest({ action: 'activate' }), params)
     expect(res.status).toBe(409)
     expect(mocks.adminUpdate).not.toHaveBeenCalled()
@@ -122,7 +127,7 @@ describe('PATCH /api/queues/[id] — lifecycle actions', () => {
 
 describe('PATCH /api/queues/[id] — chatbot_failure_queue_id', () => {
   it('requires chatbot_failure_queue_id when action is transfer_queue', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    mocks.requirePermission.mockResolvedValue(ctxWith({}))
     const res = await PATCH(
       patchRequest({ chatbot_failure_action: 'transfer_queue' }),
       params,
@@ -132,7 +137,7 @@ describe('PATCH /api/queues/[id] — chatbot_failure_queue_id', () => {
   })
 
   it('rejects the queue referencing itself as the transfer target', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    mocks.requirePermission.mockResolvedValue(ctxWith({}))
     const res = await PATCH(
       patchRequest({ chatbot_failure_action: 'transfer_queue', chatbot_failure_queue_id: 'queue-1' }),
       params,
@@ -142,7 +147,7 @@ describe('PATCH /api/queues/[id] — chatbot_failure_queue_id', () => {
   })
 
   it('rejects a transfer target that is not in this account, before ever updating', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ transferTargetFound: false }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ transferTargetFound: false }))
     const res = await PATCH(
       patchRequest({ chatbot_failure_action: 'transfer_queue', chatbot_failure_queue_id: 'queue-2' }),
       params,
@@ -152,7 +157,7 @@ describe('PATCH /api/queues/[id] — chatbot_failure_queue_id', () => {
   })
 
   it('clears chatbot_failure_queue_id when the action is not transfer_queue', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    mocks.requirePermission.mockResolvedValue(ctxWith({}))
     const res = await PATCH(
       patchRequest({ chatbot_failure_action: 'stay_in_queue', chatbot_failure_queue_id: 'queue-2' }),
       params,
@@ -164,7 +169,7 @@ describe('PATCH /api/queues/[id] — chatbot_failure_queue_id', () => {
   })
 
   it('accepts a valid transfer target in the same account', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ transferTargetFound: true }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ transferTargetFound: true }))
     const res = await PATCH(
       patchRequest({ chatbot_failure_action: 'transfer_queue', chatbot_failure_queue_id: 'queue-2' }),
       params,
@@ -178,28 +183,28 @@ describe('PATCH /api/queues/[id] — chatbot_failure_queue_id', () => {
 
 describe('PATCH /api/queues/[id] — primary_agent_id (051)', () => {
   it('clears primary_agent_id when null, without any pre-check lookup', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    mocks.requirePermission.mockResolvedValue(ctxWith({}))
     const res = await PATCH(patchRequest({ primary_agent_id: null }), params)
     expect(res.status).toBe(200)
     expect(mocks.adminUpdate).toHaveBeenCalledWith({ primary_agent_id: null })
   })
 
   it('accepts an active member of this queue', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ primaryAgentIsActiveMember: true }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ primaryAgentIsActiveMember: true }))
     const res = await PATCH(patchRequest({ primary_agent_id: 'user-1' }), params)
     expect(res.status).toBe(200)
     expect(mocks.adminUpdate).toHaveBeenCalledWith({ primary_agent_id: 'user-1' })
   })
 
   it('rejects a user who is not an active member of this queue, before ever updating', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ primaryAgentIsActiveMember: false }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ primaryAgentIsActiveMember: false }))
     const res = await PATCH(patchRequest({ primary_agent_id: 'user-1' }), params)
     expect(res.status).toBe(400)
     expect(mocks.adminUpdate).not.toHaveBeenCalled()
   })
 
   it('rejects a non-string, non-null primary_agent_id', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({}))
+    mocks.requirePermission.mockResolvedValue(ctxWith({}))
     const res = await PATCH(patchRequest({ primary_agent_id: 42 }), params)
     expect(res.status).toBe(400)
     expect(mocks.adminUpdate).not.toHaveBeenCalled()

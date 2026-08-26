@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { getTemplate } from '@/lib/automations/templates'
 import { insertSteps, type BuilderStepInput } from '@/lib/automations/steps-tree'
@@ -10,6 +11,14 @@ import {
 } from '@/lib/automations/validate'
 
 export async function GET() {
+  // automations.view — owner/admin/viewer sem gate de papel (mesmo
+  // comportamento de antes da FASE 1); um agent segue override-ou-default.
+  try {
+    await requirePermission('automations.view')
+  } catch (err) {
+    return toErrorResponse(err)
+  }
+
   const supabase = await createClient()
   const {
     data: { user },
@@ -25,11 +34,12 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  // Creating an automation is a write — the RLS automations_insert policy
-  // requires `agent`, but this route inserts via the service-role client
-  // which bypasses RLS, so the role must be enforced here.
+  // Criar uma automação é uma escrita — a policy de RLS
+  // automations_insert exige `agent`, mas esta rota insere pelo client
+  // service-role, que ignora RLS, então a permissão precisa ser
+  // aplicada aqui.
   try {
-    await requireRole('agent')
+    await requirePermission('automations.manage')
   } catch (err) {
     return toErrorResponse(err)
   }

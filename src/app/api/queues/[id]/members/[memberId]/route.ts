@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/queues/admin-client'
 import type { QueueMemberRole } from '@/types'
 
@@ -30,7 +31,7 @@ export async function PATCH(
   const { id: queueId, memberId } = await params
   let ctx
   try {
-    ctx = await requireRole('admin')
+    ctx = await requirePermission('queues.manage')
   } catch (err) {
     return toErrorResponse(err)
   }
@@ -94,7 +95,7 @@ export async function DELETE(
   const { id: queueId, memberId } = await params
   let ctx
   try {
-    ctx = await requireRole('admin')
+    ctx = await requirePermission('queues.manage')
   } catch (err) {
     return toErrorResponse(err)
   }

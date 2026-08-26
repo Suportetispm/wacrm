@@ -31,7 +31,8 @@
 
 import { NextResponse } from "next/server";
 
-import { getCurrentAccount, requireRole, toErrorResponse } from "@/lib/auth/account";
+import { toErrorResponse } from "@/lib/auth/account";
+import { requirePermission } from "@/lib/auth/permission-guard";
 import { canManageMembers, isAccountRole, type AccountRole } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/account/admin-client";
 import { compensateFailedUserCreation } from "@/lib/platform/user-compensation";
@@ -56,7 +57,7 @@ interface ProfileRow {
 
 export async function GET() {
   try {
-    const ctx = await getCurrentAccount();
+    const ctx = await requirePermission("users.view");
 
     // RLS on profiles allows reading any row whose account matches
     // the caller's, so this query is naturally account-scoped.
@@ -111,7 +112,7 @@ interface CreateMemberBody {
 export async function POST(request: Request) {
   let ctx;
   try {
-    ctx = await requireRole("admin");
+    ctx = await requirePermission("users.create");
   } catch (err) {
     return toErrorResponse(err);
   }

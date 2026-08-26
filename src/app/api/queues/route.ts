@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server'
-import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/queues/admin-client'
 import type { QueueFailureAction, TicketPriority } from '@/types'
 
-// Queues — GET lists (any account member, RLS-scoped read via the
-// user client); POST creates (admin/owner only). Mirrors the
-// quick-replies route: RLS-scoped read, service-role write after an
-// explicit role check + explicit account_id scoping.
+// Queues — GET lists (queues.view; owner/admin/viewer sem regressão,
+// agent segue override-ou-default); POST creates (queues.manage).
+// Mirrors the quick-replies route: RLS-scoped read, service-role write
+// after an explicit permission check + explicit account_id scoping.
 //
 // Every DB error returned to the client is a generic, fixed message —
 // never `error.message`. The sanitized Postgres code is logged
@@ -26,7 +27,7 @@ function sqlCode(error: unknown): string {
 
 export async function GET() {
   try {
-    const { supabase, accountId } = await getCurrentAccount()
+    const { supabase, accountId } = await requirePermission('queues.view')
     // RLS (queues_select) scopes to the caller's account.
     const { data, error } = await supabase
       .from('queues')
@@ -70,7 +71,7 @@ export async function GET() {
 export async function POST(request: Request) {
   let ctx
   try {
-    ctx = await requireRole('admin')
+    ctx = await requirePermission('queues.manage')
   } catch (err) {
     return toErrorResponse(err)
   }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/queues/admin-client'
 import type { QueueMemberRole } from '@/types'
 
@@ -32,7 +33,7 @@ export async function GET(
 ) {
   const { id: queueId } = await params
   try {
-    const { supabase } = await getCurrentAccount()
+    const { supabase } = await requirePermission('queues.view')
     const { data: members, error } = await supabase
       .from('queue_members')
       .select('*')
@@ -66,7 +67,7 @@ export async function POST(
   const { id: queueId } = await params
   let ctx
   try {
-    ctx = await requireRole('admin')
+    ctx = await requirePermission('queues.manage')
   } catch (err) {
     return toErrorResponse(err)
   }

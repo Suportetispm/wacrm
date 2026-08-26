@@ -1,23 +1,31 @@
 // ============================================================
 // /api/account/members/[userId]
 //
-//   PATCH  — change a member's role.   Admin+.
-//   DELETE — remove a member.          Admin+.
+//   PATCH  — change a member's role.   users.edit (legado: admin+).
+//   DELETE — remove a member.          admin+ apenas — FASE 1 de
+//            permissões não cobre remoção de membro; sem override
+//            individual para esta ação (decisão explícita, para não
+//            precisar tocar em remove_account_member nem nas tabelas
+//            que ela referencia).
 //
-// Both delegate to SECURITY DEFINER RPCs from migration 018:
-//   - set_member_role(p_user_id, p_new_role)
-//   - remove_account_member(p_user_id)
+// PATCH delega para a SECURITY DEFINER RPC de migration 018, patched
+// por 062_user_permission_overrides.sql (set_member_role) — a RPC faz
+// a autorização *de verdade* (admin+ OU agent com override 'users.edit'
+// = true; alvo na mesma conta, não pode ser o owner, não pode ser o
+// próprio chamador). A camada TS aqui só decide se sequer tenta a
+// chamada (via requirePermission, para um 403 rápido e mensagem
+// consistente) e mapeia os SQLSTATEs de volta para status HTTP.
 //
-// The RPCs do the *real* authorisation work — caller must be
-// admin+, target must be in caller's account, target can't be the
-// owner, can't be self. The TS layer here only forwards the call
-// and maps Postgres SQLSTATEs back to HTTP statuses.
+// DELETE delega para remove_account_member (018) — inalterada por
+// 062, sem qualquer participação do sistema de overrides. Guard aqui
+// é requireRole('admin') puro, como sempre foi.
 // ============================================================
 
 import { NextResponse } from "next/server";
 import type { PostgrestError } from "@supabase/supabase-js";
 
 import { requireRole, toErrorResponse } from "@/lib/auth/account";
+import { requirePermission } from "@/lib/auth/permission-guard";
 import { isAccountRole } from "@/lib/auth/roles";
 import {
   checkRateLimit,
@@ -47,7 +55,7 @@ export async function PATCH(
   { params }: { params: Promise<{ userId: string }> },
 ) {
   try {
-    const ctx = await requireRole("admin");
+    const ctx = await requirePermission("users.edit");
 
     const limit = checkRateLimit(
       `admin:memberRole:${ctx.userId}`,

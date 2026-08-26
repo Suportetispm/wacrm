@@ -20,6 +20,7 @@ import {
   isAccountRole,
   type AccountRole,
 } from "@/lib/auth/roles";
+import type { PermissionKey } from "@/lib/auth/permissions";
 
 interface Profile {
   id: string;
@@ -102,6 +103,27 @@ interface AuthContextValue {
   canEditSettings: boolean;
   /** True if the caller can send messages and edit operational data (agent+). */
   canSendMessages: boolean;
+
+  // ----------------------------------------------------------
+  // FASE 1 de permissões administrativas por usuário (062_user_
+  // permission_overrides.sql)
+  //
+  // Só é relevante para accountRole === 'agent' — owner/admin/viewer
+  // continuam 100% determinados pelos booleanos de rank acima
+  // (canManageMembers etc.), nunca leem isto. Por isso `permissions`
+  // só é buscado quando accountRole resolve para 'agent'; para
+  // qualquer outro papel fica `null` e `permissionsLoading` fica
+  // `false` — nenhuma chamada de rede extra é feita.
+  // ----------------------------------------------------------
+
+  /** Permissões efetivas do próprio usuário (só populado para agent). */
+  permissions: Record<PermissionKey, boolean> | null;
+  /** Verdadeiro enquanto a busca de `permissions` está em andamento
+   *  (só chega a `true` quando accountRole === 'agent'). Gates que
+   *  dependem de `permissions` devem falhar fechado (tratar como
+   *  "sem permissão") enquanto isto for `true`, para nunca piscar uma
+   *  seção restrita na tela por um render. */
+  permissionsLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -116,6 +138,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [account, setAccount] = useState<AccountSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [permissions, setPermissions] = useState<Record<PermissionKey, boolean> | null>(null);
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
   // Tracked separately from `loading`. The session settles fast (one
   // local cookie read); the profile fetch crosses the network and
   // settles later. Callers that gate on `profile.*` need to know which
@@ -300,6 +324,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [fetchProfile]);
 
+  // Busca as permissões efetivas SOMENTE quando o papel resolvido é
+  // 'agent' — owner/admin/viewer nunca precisam desta chamada, seu
+  // comportamento já é 100% determinado pelo rank. Refeita sempre que
+  // o profile é recarregado (refreshProfile, troca de conta) para o
+  // caso de um Superadmin ter atualizado os overrides do usuário
+  // enquanto a sessão estava aberta.
+  useEffect(() => {
+    if (profileLoading) return;
+    if (profile?.account_role !== "agent") {
+      setPermissions(null);
+      setPermissionsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPermissionsLoading(true);
+    fetch("/api/account/permissions", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+      .then((data: { permissions?: Record<PermissionKey, boolean> }) => {
+        if (!cancelled) setPermissions(data.permissions ?? null);
+      })
+      .catch((err) => {
+        console.error("[AuthProvider] fetchPermissions error:", err);
+        // Falha fechada: sem permissions resolvido, todo gate que
+        // depende de uma chave específica trata `undefined` como
+        // "sem permissão" (ver settings-rail.tsx / sidebar.tsx).
+        if (!cancelled) setPermissions(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPermissionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profileLoading, profile?.account_role]);
+
   const signOut = useCallback(async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
@@ -344,6 +403,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         refreshProfile,
         account,
         defaultCurrency: account?.default_currency ?? DEFAULT_CURRENCY,
+        permissions,
+        permissionsLoading,
         ...derived,
       }}
     >
@@ -383,6 +444,8 @@ export function useAuth(): AuthContextValue {
       canManageMembers: false,
       canEditSettings: false,
       canSendMessages: false,
+      permissions: null,
+      permissionsLoading: false,
     };
   }
   return ctx;

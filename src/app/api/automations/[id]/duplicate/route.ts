@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 
 export async function POST(
@@ -13,7 +14,7 @@ export async function POST(
   // agent-gated automations_insert RLS, so both checks must happen here).
   let ctx
   try {
-    ctx = await requireRole('agent')
+    ctx = await requirePermission('automations.manage')
   } catch (err) {
     return toErrorResponse(err)
   }

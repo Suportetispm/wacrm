@@ -32,6 +32,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { AccountRole } from "@/lib/auth/roles";
+import type { PermissionKey } from "@/lib/auth/permissions";
 
 // Per-role chip metadata used in the sidebar's account strip + the
 // Members tab roster. Keeping this near both consumers in a single
@@ -92,6 +93,15 @@ interface NavItem {
    * Purely informational — doesn't affect routing or access.
    */
   beta?: boolean;
+  /**
+   * FASE 1 de permissões administrativas por usuário
+   * (062_user_permission_overrides.sql). Só é consultada para
+   * accountRole === 'agent' — owner/admin/viewer sempre veem este
+   * item, comportamento idêntico ao de antes desta feature. Quando
+   * presente, um agent só vê o item se `permissions[agentViewKey]`
+   * for `true` (default ou override).
+   */
+  agentViewKey?: PermissionKey;
 }
 
 const navItems: NavItem[] = [
@@ -103,8 +113,8 @@ const navItems: NavItem[] = [
   { href: "/tickets", labelKey: "tickets", icon: Ticket },
   { href: "/internal-tickets", labelKey: "internalTickets", icon: ClipboardList },
   { href: "/broadcasts", labelKey: "broadcasts", icon: Radio },
-  { href: "/automations", labelKey: "automations", icon: Zap },
-  { href: "/flows", labelKey: "flows", icon: Workflow, beta: true },
+  { href: "/automations", labelKey: "automations", icon: Zap, agentViewKey: "automations.view" },
+  { href: "/flows", labelKey: "flows", icon: Workflow, beta: true, agentViewKey: "flows.view" },
   { href: "/agents", labelKey: "aiAgents", icon: Bot },
 ];
 
@@ -123,7 +133,16 @@ import { useTranslations } from "next-intl";
 export function Sidebar({ open = false, onClose }: SidebarProps) {
   const t = useTranslations("Sidebar");
   const pathname = usePathname();
-  const { profile, profileLoading, account, accountRole, signOut } = useAuth();
+  const { profile, profileLoading, account, accountRole, permissions, permissionsLoading, signOut } = useAuth();
+  const isAgent = accountRole === "agent";
+  // FASE 1 de permissões — só um agent é filtrado; owner/admin/viewer
+  // sempre veem todo item, exatamente como antes desta feature. Fail
+  // closed enquanto `permissions` ainda carrega, para nunca piscar um
+  // item restrito na tela por um render.
+  const visibleNavItems = navItems.filter((item) => {
+    if (!isAgent || !item.agentViewKey) return true;
+    return !permissionsLoading && permissions?.[item.agentViewKey] === true;
+  });
   // Platform scope — entirely separate from account_role. A tenant
   // owner/admin does NOT get this entry unless they're also
   // explicitly in public.platform_admins (see use-platform-admin.ts).
@@ -217,7 +236,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
         {/* Main navigation */}
         <nav className="flex-1 overflow-y-auto px-3 py-4">
           <ul className="flex flex-col gap-1">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const isActive =
                 pathname === item.href ||
                 (item.href !== "/dashboard" && pathname.startsWith(item.href));

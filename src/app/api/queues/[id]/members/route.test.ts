@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  requireRole: vi.fn(),
-  getCurrentAccount: vi.fn(),
+  requirePermission: vi.fn(),
   adminInsert: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/account', () => ({
-  requireRole: mocks.requireRole,
-  getCurrentAccount: mocks.getCurrentAccount,
   toErrorResponse: vi.fn((err: { status?: number; message?: string }) =>
     Response.json({ error: err?.message ?? 'error' }, { status: err?.status ?? 500 }),
   ),
+}))
+
+// POST usava requireRole("admin") (queues.manage) — a FASE 1 troca por
+// requirePermission; para owner/admin/viewer o resultado é idêntico
+// (legacyHasPermission preserva o rank check de antes).
+vi.mock('@/lib/auth/permission-guard', () => ({
+  requirePermission: mocks.requirePermission,
 }))
 
 vi.mock('@/lib/queues/admin-client', () => ({
@@ -67,33 +71,33 @@ function ctxWith(opts: { queueFound: boolean; profileFound: boolean }) {
 }
 
 beforeEach(() => {
-  mocks.requireRole.mockReset()
+  mocks.requirePermission.mockReset()
   mocks.adminInsert.mockReset()
 })
 
 describe('POST /api/queues/[id]/members', () => {
   it('rejects a caller below admin', async () => {
-    mocks.requireRole.mockRejectedValue(Object.assign(new Error('Forbidden'), { status: 403 }))
+    mocks.requirePermission.mockRejectedValue(Object.assign(new Error('Forbidden'), { status: 403 }))
     const res = await POST(postRequest({ user_id: 'user-2' }), params)
     expect(res.status).toBe(403)
   })
 
   it('rejects a queue_id that does not belong to this account, before ever inserting', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ queueFound: false, profileFound: true }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ queueFound: false, profileFound: true }))
     const res = await POST(postRequest({ user_id: 'user-2' }), params)
     expect(res.status).toBe(404)
     expect(mocks.adminInsert).not.toHaveBeenCalled()
   })
 
   it('rejects a user_id with no profile in this account, before ever inserting', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ queueFound: true, profileFound: false }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ queueFound: true, profileFound: false }))
     const res = await POST(postRequest({ user_id: 'user-2' }), params)
     expect(res.status).toBe(400)
     expect(mocks.adminInsert).not.toHaveBeenCalled()
   })
 
   it('adds a member once both the queue and the target profile are confirmed in-account', async () => {
-    mocks.requireRole.mockResolvedValue(ctxWith({ queueFound: true, profileFound: true }))
+    mocks.requirePermission.mockResolvedValue(ctxWith({ queueFound: true, profileFound: true }))
     const res = await POST(postRequest({ user_id: 'user-2', role_in_queue: 'supervisor', weight: 5 }), params)
     expect(res.status).toBe(201)
     expect(mocks.adminInsert).toHaveBeenCalledWith(

@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  getCurrentAccount: vi.fn(),
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
   rpc: vi.fn(),
   queuesFrom: vi.fn(),
   adminFrom: vi.fn(),
@@ -11,11 +10,20 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/auth/account', () => ({
-  getCurrentAccount: mocks.getCurrentAccount,
-  requireRole: mocks.requireRole,
   toErrorResponse: vi.fn((err: { status?: number; message?: string }) =>
     Response.json({ error: err?.message ?? 'error' }, { status: err?.status ?? 500 }),
   ),
+}))
+
+// GET usava getCurrentAccount() (users.view era irrestrito); POST usava
+// requireRole("admin") (users.create). A FASE 1 de permissões substitui
+// as duas por requirePermission('users.view' | 'users.create') — para
+// owner/admin/viewer o resultado é idêntico (legacyHasPermission
+// preserva o rank check de antes); só um agent com override passa a se
+// comportar diferente, e isso é coberto em permission-guard.test.ts, não
+// aqui.
+vi.mock('@/lib/auth/permission-guard', () => ({
+  requirePermission: mocks.requirePermission,
 }))
 
 vi.mock('@/lib/account/admin-client', () => ({
@@ -84,8 +92,7 @@ function makeCtx(overrides: Partial<{ userId: string; accountId: string; role: s
 }
 
 beforeEach(() => {
-  mocks.getCurrentAccount.mockReset()
-  mocks.requireRole.mockReset()
+  mocks.requirePermission.mockReset()
   mocks.rpc.mockReset()
   mocks.queuesFrom.mockReset()
   mocks.adminFrom.mockReset()
@@ -98,7 +105,7 @@ describe('GET /api/account/members', () => {
   // filter (src/lib/tickets/candidates.ts); a deactivated member must
   // never be offered as a valid transfer target.
   it('includes is_active on every returned member', async () => {
-    mocks.getCurrentAccount.mockResolvedValue({
+    mocks.requirePermission.mockResolvedValue({
       accountId: 'acct-1',
       role: 'admin',
       supabase: makeSupabase([
@@ -134,7 +141,7 @@ describe('GET /api/account/members', () => {
   })
 
   it('still hides email from non-admin+ callers (unchanged pre-existing behavior)', async () => {
-    mocks.getCurrentAccount.mockResolvedValue({
+    mocks.requirePermission.mockResolvedValue({
       accountId: 'acct-1',
       role: 'agent',
       supabase: makeSupabase([
@@ -156,24 +163,47 @@ describe('GET /api/account/members', () => {
     expect(json.members[0].email).toBeNull()
     expect(json.members[0].is_active).toBe(true)
   })
+
+  // FASE 1: users.view. requirePermission() é quem decide se um agent
+  // sem override cai em 403 — este teste só confirma que a rota
+  // repassa esse resultado sem tentar contornar.
+  it('propagates a 403 from requirePermission (agent without users.view override)', async () => {
+    mocks.requirePermission.mockRejectedValue(FORBIDDEN)
+    const res = await GET()
+    expect(res.status).toBe(403)
+  })
 })
 
 describe('POST /api/account/members', () => {
   it('rejects a caller below admin (agent) with 403, before touching the body', async () => {
-    mocks.requireRole.mockRejectedValue(FORBIDDEN)
+    mocks.requirePermission.mockRejectedValue(FORBIDDEN)
     const res = await POST(postRequest(validBody))
     expect(res.status).toBe(403)
     expect(mocks.createUser).not.toHaveBeenCalled()
   })
 
   it('rejects a viewer caller with 403', async () => {
-    mocks.requireRole.mockRejectedValue(FORBIDDEN)
+    mocks.requirePermission.mockRejectedValue(FORBIDDEN)
     const res = await POST(postRequest(validBody))
     expect(res.status).toBe(403)
   })
 
+  // FASE 1: um agent cujo override libera users.create=true passa pelo
+  // mesmo caminho de um admin — a rota não hard-codes nenhum papel, só
+  // confia no que requirePermission() já decidiu.
+  it('an agent whose override permits users.create succeeds like an admin would', async () => {
+    mocks.requirePermission.mockResolvedValue(makeCtx({ role: 'agent' }))
+    mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-8' } }, error: null })
+    mocks.rpc.mockResolvedValue({ error: null })
+
+    const res = await POST(postRequest(validBody))
+
+    expect(res.status).toBe(201)
+    expect(mocks.requirePermission).toHaveBeenCalledWith('users.create')
+  })
+
   it('owner/admin creates an agent in their own account — RPC gets no account_id at all', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx({ role: 'owner' }))
+    mocks.requirePermission.mockResolvedValue(makeCtx({ role: 'owner' }))
     mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-1' } }, error: null })
     mocks.rpc.mockResolvedValue({ error: null })
 
@@ -196,7 +226,7 @@ describe('POST /api/account/members', () => {
   })
 
   it('creates an admin in the caller\'s own account', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-2' } }, error: null })
     mocks.rpc.mockResolvedValue({ error: null })
 
@@ -210,7 +240,7 @@ describe('POST /api/account/members', () => {
   })
 
   it('creates a viewer — the architecture already supports this role in the invite flow, so direct creation offers it too', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-3' } }, error: null })
     mocks.rpc.mockResolvedValue({ error: null })
 
@@ -224,14 +254,14 @@ describe('POST /api/account/members', () => {
   })
 
   it("rejects role: 'owner' — owner is never created by this screen", async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     const res = await POST(postRequest({ ...validBody, role: 'owner' }))
     expect(res.status).toBe(400)
     expect(mocks.createUser).not.toHaveBeenCalled()
   })
 
   it("ignores a client-supplied 'account_id' in the body entirely — the caller cannot pick an arbitrary account", async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx({ accountId: 'acct-real' }))
+    mocks.requirePermission.mockResolvedValue(makeCtx({ accountId: 'acct-real' }))
     mocks.createUser.mockResolvedValue({ data: { user: { id: 'new-user-4' } }, error: null })
     mocks.rpc.mockResolvedValue({ error: null })
 
@@ -248,7 +278,7 @@ describe('POST /api/account/members', () => {
   })
 
   it('rejects a queue from a different account before creating the auth user', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     mocks.queuesFrom.mockImplementation((table: string) => {
       if (table === 'queues') return chain({ data: [], error: null }) // none matched
       throw new Error(`unexpected table ${table}`)
@@ -261,7 +291,7 @@ describe('POST /api/account/members', () => {
   })
 
   it('returns 409 when the email already exists, without calling the attach RPC', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     mocks.createUser.mockResolvedValue({
       data: null,
       error: { status: 422, message: 'A user with this email address has already been registered' },
@@ -276,7 +306,7 @@ describe('POST /api/account/members', () => {
   })
 
   it('compensates by deleting the freshly created auth user when the attach RPC fails, and surfaces the RPC error', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     mocks.adminFrom.mockImplementation((table: string) => {
       if (table === 'profiles') return chain({ data: { account_id: 'temp-acct-1' }, error: null })
       if (table === 'accounts') return chain({ data: null, error: null })
@@ -295,7 +325,7 @@ describe('POST /api/account/members', () => {
   })
 
   it('reports a distinct 500 when compensation deleteUser also fails, without leaking the password', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     mocks.adminFrom.mockImplementation((table: string) => {
       if (table === 'profiles') return chain({ data: { account_id: 'temp-acct-1' }, error: null })
       if (table === 'accounts') return chain({ data: null, error: null })
@@ -318,7 +348,7 @@ describe('POST /api/account/members', () => {
   // success path can cause is create_account_member's own DELETE of
   // the caller-less temp personal account — never an INSERT.
   it('REGRESSION: never inserts into accounts — public.accounts row count is unaffected by a successful create', async () => {
-    mocks.requireRole.mockResolvedValue(makeCtx())
+    mocks.requirePermission.mockResolvedValue(makeCtx())
     const accountsInsert = vi.fn()
     mocks.adminFrom.mockImplementation((table: string) => {
       const obj = chain({ data: null, error: null })

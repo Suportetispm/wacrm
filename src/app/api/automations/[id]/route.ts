@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import {
   loadStepsTree,
@@ -23,7 +24,7 @@ export async function GET(
   // account_id, and never authorize by user_id alone across accounts).
   let ctx
   try {
-    ctx = await getCurrentAccount()
+    ctx = await requirePermission('automations.view')
   } catch (err) {
     return toErrorResponse(err)
   }
@@ -56,7 +57,7 @@ export async function PATCH(
   // here (never trust a client-supplied account_id).
   let ctx
   try {
-    ctx = await requireRole('agent')
+    ctx = await requirePermission('automations.manage')
   } catch (err) {
     return toErrorResponse(err)
   }
@@ -144,7 +145,7 @@ export async function DELETE(
   // automations_delete RLS, so both checks must happen here).
   let ctx
   try {
-    ctx = await requireRole('agent')
+    ctx = await requirePermission('automations.manage')
   } catch (err) {
     return toErrorResponse(err)
   }

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 
@@ -24,12 +25,12 @@ export async function POST(
 ) {
   const { id } = await context.params
 
-  // Changing status (activate / draft / archive) is a write — the RLS
-  // flows_update policy requires `agent`, but the service-role client
-  // below bypasses RLS, so enforce the role here (a viewer passes the
-  // membership-only ownership check).
+  // Mudar o status (activate / draft / archive) é uma escrita — a RLS
+  // flows_update exige `agent`, mas o client service-role abaixo
+  // ignora RLS, então a permissão precisa ser aplicada aqui (um viewer
+  // passaria pela checagem de ownership, que só olha membership).
   try {
-    await requireRole('agent')
+    await requirePermission('flows.activate')
   } catch (err) {
     return toErrorResponse(err)
   }

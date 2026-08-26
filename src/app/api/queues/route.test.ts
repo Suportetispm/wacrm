@@ -1,17 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  requireRole: vi.fn(),
-  getCurrentAccount: vi.fn(),
+  requirePermission: vi.fn(),
   adminInsert: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/account', () => ({
-  requireRole: mocks.requireRole,
-  getCurrentAccount: mocks.getCurrentAccount,
   toErrorResponse: vi.fn((err: { status?: number; message?: string }) =>
     Response.json({ error: err?.message ?? 'error' }, { status: err?.status ?? 500 }),
   ),
+}))
+
+// GET usava getCurrentAccount() (queues.view era irrestrito); POST
+// usava requireRole("admin") (queues.manage). A FASE 1 troca as duas
+// por requirePermission — para owner/admin/viewer o resultado é
+// idêntico (legacyHasPermission preserva o rank check de antes).
+vi.mock('@/lib/auth/permission-guard', () => ({
+  requirePermission: mocks.requirePermission,
 }))
 
 vi.mock('@/lib/queues/admin-client', () => ({
@@ -42,14 +47,13 @@ function postRequest(body: unknown) {
 }
 
 beforeEach(() => {
-  mocks.requireRole.mockReset()
-  mocks.getCurrentAccount.mockReset()
+  mocks.requirePermission.mockReset()
   mocks.adminInsert.mockReset()
 })
 
 describe('POST /api/queues', () => {
   it('rejects a caller below admin', async () => {
-    mocks.requireRole.mockRejectedValue(
+    mocks.requirePermission.mockRejectedValue(
       Object.assign(new Error('Forbidden'), { status: 403 }),
     )
     const res = await POST(postRequest({ name: 'Support' }))
@@ -57,13 +61,13 @@ describe('POST /api/queues', () => {
   })
 
   it('rejects a missing name', async () => {
-    mocks.requireRole.mockResolvedValue(CTX)
+    mocks.requirePermission.mockResolvedValue(CTX)
     const res = await POST(postRequest({}))
     expect(res.status).toBe(400)
   })
 
   it('creates a queue using the session account_id, never a client-supplied one', async () => {
-    mocks.requireRole.mockResolvedValue(CTX)
+    mocks.requirePermission.mockResolvedValue(CTX)
     const res = await POST(postRequest({ name: 'Support', account_id: 'attacker-account' }))
     expect(res.status).toBe(201)
     expect(mocks.adminInsert).toHaveBeenCalledWith(
@@ -72,11 +76,20 @@ describe('POST /api/queues', () => {
   })
 
   it('defaults chatbot_failure_queue_id to null unless the action is transfer_queue', async () => {
-    mocks.requireRole.mockResolvedValue(CTX)
+    mocks.requirePermission.mockResolvedValue(CTX)
     await POST(postRequest({ name: 'Support', chatbot_failure_action: 'stay_in_queue', chatbot_failure_queue_id: 'other-queue' }))
     expect(mocks.adminInsert).toHaveBeenCalledWith(
       expect.objectContaining({ chatbot_failure_action: 'stay_in_queue', chatbot_failure_queue_id: null }),
     )
+  })
+
+  // FASE 1: an agent whose override permits queues.manage succeeds
+  // like an admin would — the route itself never hard-codes a role.
+  it('an agent whose override permits queues.manage succeeds like an admin would', async () => {
+    mocks.requirePermission.mockResolvedValue({ ...CTX, role: 'agent' })
+    const res = await POST(postRequest({ name: 'Support' }))
+    expect(res.status).toBe(201)
+    expect(mocks.requirePermission).toHaveBeenCalledWith('queues.manage')
   })
 })
 
@@ -104,7 +117,7 @@ describe('GET /api/queues', () => {
       }
       throw new Error(`unexpected table in test: ${table}`)
     })
-    mocks.getCurrentAccount.mockResolvedValue({ supabase: { from }, accountId: 'acct-1' })
+    mocks.requirePermission.mockResolvedValue({ supabase: { from }, accountId: 'acct-1' })
 
     const res = await GET()
     const json = await res.json()
@@ -113,5 +126,6 @@ describe('GET /api/queues', () => {
     expect(json.queues).toEqual([{ id: 'q1', member_count: 2 }])
     expect(from).toHaveBeenCalledWith('queues')
     expect(from).toHaveBeenCalledWith('queue_members')
+    expect(mocks.requirePermission).toHaveBeenCalledWith('queues.view')
   })
 })

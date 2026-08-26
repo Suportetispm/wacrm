@@ -15,6 +15,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 
+import type { PermissionKey } from '@/lib/auth/permissions';
+
 /**
  * Settings information architecture for the redesigned page.
  *
@@ -51,6 +53,17 @@ export interface SectionMeta {
   group: 'top' | 'account' | 'workspace';
   /** Hidden from the rail (not just gated in the panel) for agent/viewer. */
   adminOnly?: boolean;
+  /**
+   * FASE 1 de permissões administrativas por usuário
+   * (062_user_permission_overrides.sql). Só é consultada para
+   * accountRole === 'agent' — owner/admin/viewer nunca são afetados
+   * por este campo, seu acesso continua determinado só por
+   * `adminOnly`/rank. Quando presente, um agent só vê esta seção se
+   * `permissions[agentViewKey]` for `true` (default ou override) —
+   * mesmo em seções sem `adminOnly` (members, quick-replies), que
+   * antes da FASE 1 eram abertas para qualquer papel.
+   */
+  agentViewKey?: PermissionKey;
 }
 
 export const SECTION_META: Record<SettingsSection, SectionMeta> = {
@@ -60,16 +73,16 @@ export const SECTION_META: Record<SettingsSection, SectionMeta> = {
   appearance: { id: 'appearance', label: 'Appearance', icon: Palette, group: 'account' },
   whatsapp: { id: 'whatsapp', label: 'WhatsApp', icon: PlugZap, group: 'workspace' },
   templates: { id: 'templates', label: 'Templates', icon: FileText, group: 'workspace' },
-  'quick-replies': { id: 'quick-replies', label: 'Quick replies', icon: Zap, group: 'workspace' },
+  'quick-replies': { id: 'quick-replies', label: 'Quick replies', icon: Zap, group: 'workspace', agentViewKey: 'quick_replies.view' },
   fields: { id: 'fields', label: 'Fields & tags', icon: Tags, group: 'workspace' },
   deals: { id: 'deals', label: 'Deals & currency', icon: Coins, group: 'workspace' },
-  queues: { id: 'queues', label: 'Setores', icon: ListTodo, group: 'workspace', adminOnly: true },
+  queues: { id: 'queues', label: 'Setores', icon: ListTodo, group: 'workspace', adminOnly: true, agentViewKey: 'queues.view' },
   // Not adminOnly, unlike `queues`: viewer/agent get read-only access
   // to the catalogs here (RLS SELECT is open to any member, migration
   // 052) — only the write controls inside are admin-gated, per-control,
   // not the whole section.
   'internal-tickets': { id: 'internal-tickets', label: 'Internal tickets', icon: Ticket, group: 'workspace' },
-  members: { id: 'members', label: 'Team members', icon: UsersRound, group: 'workspace' },
+  members: { id: 'members', label: 'Team members', icon: UsersRound, group: 'workspace', agentViewKey: 'users.view' },
   api: { id: 'api', label: 'API keys', icon: KeyRound, group: 'workspace' },
 };
 

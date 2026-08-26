@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 
@@ -10,7 +11,7 @@ import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 
 export async function GET() {
   try {
-    const { supabase } = await getCurrentAccount()
+    const { supabase } = await requirePermission('quick_replies.view')
     // RLS (quick_replies_select) scopes to the caller's account.
     const { data, error } = await supabase
       .from('quick_replies')
@@ -26,7 +27,7 @@ export async function GET() {
 export async function POST(request: Request) {
   let ctx
   try {
-    ctx = await requireRole('agent')
+    ctx = await requirePermission('quick_replies.manage')
   } catch (err) {
     return toErrorResponse(err)
   }

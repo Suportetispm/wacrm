@@ -1,17 +1,19 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { toErrorResponse } from '@/lib/auth/account'
+import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { getFlowTemplate } from '@/lib/flows/templates'
 
 /**
- * GET /api/flows — list the caller's flows.
- * POST /api/flows — create a new (draft) flow.
+ * GET /api/flows — list the caller's flows.               (flows.view)
+ * POST /api/flows — create a new (draft) flow.             (flows.manage)
  *
- * Available to every authenticated user. The previous per-account
- * beta gate was removed when Flows went to soft-GA; the UI still
- * shows a "Beta" label so users know the surface is young, but the
- * routes themselves are open.
+ * Disponível para owner/admin/viewer sem restrição de papel (mesmo
+ * comportamento de antes da FASE 1 — nenhuma rota aqui tinha gate de
+ * papel); um agent segue override-ou-default. A UI ainda mostra um
+ * rótulo "Beta" para lembrar que a superfície é jovem, mas as rotas em
+ * si continuam abertas para quem tem flows.view/flows.manage.
  */
 
 async function requireUser(): Promise<
@@ -29,11 +31,13 @@ async function requireUser(): Promise<
 }
 
 export async function GET() {
-  const guard = await requireUser()
-  if (!guard.ok) {
-    return NextResponse.json(guard.body, { status: guard.status })
+  let ctx
+  try {
+    ctx = await requirePermission('flows.view')
+  } catch (err) {
+    return toErrorResponse(err)
   }
-  const { supabase } = guard
+  const { supabase } = ctx
 
   const { data, error } = await supabase
     .from('flows')
@@ -46,11 +50,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  // Creating a flow is a write — the RLS flows_insert policy requires
-  // `agent`, but this route inserts via the service-role client which
-  // bypasses RLS, so the role must be enforced here.
+  // Criar um flow é uma escrita — a policy de RLS flows_insert exige
+  // `agent`, mas esta rota insere pelo client service-role, que
+  // ignora RLS, então a permissão precisa ser aplicada aqui.
   try {
-    await requireRole('agent')
+    await requirePermission('flows.manage')
   } catch (err) {
     return toErrorResponse(err)
   }
