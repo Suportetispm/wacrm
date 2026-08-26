@@ -11,6 +11,13 @@ const state = vi.hoisted(() => ({
   configRows: [] as Record<string, unknown>[],
   accountActive: true,
   fromCalls: [] as string[],
+  // Only populated by the migration-063 describe block below — an
+  // existing contact/conversation to walk past the find-or-create
+  // steps, and the row `meta_reopen_conversation_on_inbound` returns
+  // via RETURNING * (its RPC mock echoes this back).
+  contactsRows: [] as Record<string, unknown>[],
+  conversationsRows: [] as Record<string, unknown>[],
+  rpcResult: null as { data: unknown; error: unknown } | null,
 }))
 
 const mocks = vi.hoisted(() => ({
@@ -41,6 +48,36 @@ vi.mock('@supabase/supabase-js', () => ({
           }),
         }
       }
+      // contacts: only findExistingContact's `.select('*').eq(...).like(...)`
+      // shape is special-cased (migration-063 describe block below needs an
+      // existing contact so the pipeline reaches the reopen RPC) — the
+      // insert/update paths still fall through to the generic chain.
+      if (table === 'contacts' && state.contactsRows.length > 0) {
+        return {
+          select: () => ({
+            eq: () => ({
+              like: () => Promise.resolve({ data: state.contactsRows, error: null }),
+            }),
+          }),
+          update: () => ({ eq: () => Promise.resolve({ data: null, error: null }) }),
+        }
+      }
+      // conversations: only findOrCreateConversation's
+      // `.select('*').eq(account_id).eq(contact_id).order().limit()` shape
+      // is special-cased, same reasoning as contacts above.
+      if (table === 'conversations' && state.conversationsRows.length > 0) {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: () => Promise.resolve({ data: state.conversationsRows, error: null }),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
       // contacts/conversations/messages etc. — not modeled in this
       // file (that's covered elsewhere); a graceful "nothing found /
       // errored" response is enough to prove whether processing got
@@ -66,6 +103,10 @@ vi.mock('@supabase/supabase-js', () => ({
       }
       return chain
     },
+    // Only meta_reopen_conversation_on_inbound is exercised by any test in
+    // this file today — echoes back whatever the migration-063 describe
+    // block configures as the RPC's RETURNING * row.
+    rpc: () => Promise.resolve(state.rpcResult ?? { data: null, error: null }),
   }),
 }))
 
@@ -125,6 +166,9 @@ beforeEach(() => {
   ]
   state.accountActive = true
   state.fromCalls = []
+  state.contactsRows = []
+  state.conversationsRows = []
+  state.rpcResult = null
   mocks.runAutomationsForTrigger.mockClear()
   mocks.dispatchInboundToFlows.mockClear()
   mocks.dispatchInboundToAiReply.mockClear()
@@ -151,5 +195,78 @@ describe('processWebhook — inactive account (accounts.is_active = false)', () 
 
     expect(state.fromCalls).toContain('accounts')
     expect(state.fromCalls).toContain('contacts')
+  })
+})
+
+describe('processMessage — Flow dispatch uses the RPC\'s post-reopen state (migration 063)', () => {
+  // These configure an existing contact/conversation so the pipeline
+  // reaches meta_reopen_conversation_on_inbound and dispatchInboundToFlows
+  // for real, instead of short-circuiting earlier like the tests above.
+  beforeEach(() => {
+    state.contactsRows = [{ id: 'contact-1', account_id: 'acct-1', phone: '15551234567', name: 'Jane' }]
+    state.conversationsRows = [
+      {
+        id: 'conv-1',
+        account_id: 'acct-1',
+        contact_id: 'contact-1',
+        // Stale values as they were BEFORE the reopen RPC ran — this is
+        // the `conversation` object route.ts holds from its earlier
+        // find-or-create lookup. If the fix regressed, these are the
+        // values that would leak into dispatchInboundToFlows.
+        queue_id: 'queue-old',
+        assigned_agent_id: 'agent-old',
+        status: 'closed',
+      },
+    ]
+  })
+
+  it('passes queueId/assignedAgentId null to the Flow runner when the RPC cleared them (conversation was closed)', async () => {
+    state.rpcResult = {
+      data: {
+        id: 'conv-1',
+        account_id: 'acct-1',
+        contact_id: 'contact-1',
+        queue_id: null,
+        assigned_agent_id: null,
+        status: 'pending',
+      },
+      error: null,
+    }
+
+    await expect(processWebhook(inboundBody())).resolves.not.toThrow()
+
+    expect(mocks.dispatchInboundToFlows).toHaveBeenCalledWith(
+      expect.objectContaining({ queueId: null, assignedAgentId: null }),
+    )
+  })
+
+  it('passes through the RPC\'s unchanged routing when it did not clear anything (e.g. conversation has a ticket)', async () => {
+    state.rpcResult = {
+      data: {
+        id: 'conv-1',
+        account_id: 'acct-1',
+        contact_id: 'contact-1',
+        queue_id: 'queue-old',
+        assigned_agent_id: 'agent-old',
+        status: 'closed',
+      },
+      error: null,
+    }
+
+    await expect(processWebhook(inboundBody())).resolves.not.toThrow()
+
+    expect(mocks.dispatchInboundToFlows).toHaveBeenCalledWith(
+      expect.objectContaining({ queueId: 'queue-old', assignedAgentId: 'agent-old' }),
+    )
+  })
+
+  it('falls back to the pre-RPC conversation object if the RPC itself errors', async () => {
+    state.rpcResult = { data: null, error: { message: 'boom' } }
+
+    await expect(processWebhook(inboundBody())).resolves.not.toThrow()
+
+    expect(mocks.dispatchInboundToFlows).toHaveBeenCalledWith(
+      expect.objectContaining({ queueId: 'queue-old', assignedAgentId: 'agent-old' }),
+    )
   })
 })

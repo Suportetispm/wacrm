@@ -715,7 +715,17 @@ async function processMessage(
   // unread_count is incremented inside the function, not read from the
   // `conversation` object fetched earlier in this handler — avoids
   // acting on a value that may already be stale by the time we get here.
-  const { error: convError } = await supabaseAdmin().rpc(
+  //
+  // Migration 063: when the conversation was closed/finalized (and has
+  // no ticket), this RPC also clears queue_id/assigned_agent_id — a
+  // "new service entry". The `conversation` object above still holds
+  // the PRE-reopen values, so the RPC's own `RETURNING *` (already
+  // there, previously discarded) is what the Flow dispatch below must
+  // read instead — otherwise the runner would see the stale, still-
+  // routed state and never re-trigger `inbound_message`. Falls back to
+  // `conversation` only if the RPC itself errored, matching the
+  // previous behavior for that failure path.
+  const { data: reopenedConversation, error: convError } = await supabaseAdmin().rpc(
     'meta_reopen_conversation_on_inbound',
     {
       p_conversation_id: conversation.id,
@@ -727,6 +737,7 @@ async function processMessage(
   if (convError) {
     console.error('Error updating conversation:', convError)
   }
+  const routingState = reopenedConversation ?? conversation
 
   // If this contact was a recent broadcast recipient, flag the reply
   // so the broadcast's `replied_count` advances (via the aggregate
@@ -757,8 +768,8 @@ async function processMessage(
     userId: configOwnerUserId,
     contactId: contactRecord.id,
     conversationId: conversation.id,
-    queueId: conversation.queue_id,
-    assignedAgentId: conversation.assigned_agent_id,
+    queueId: routingState.queue_id,
+    assignedAgentId: routingState.assigned_agent_id,
     message:
       interactiveReplyId
         ? {

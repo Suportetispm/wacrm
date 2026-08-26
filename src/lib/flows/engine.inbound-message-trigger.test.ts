@@ -599,3 +599,136 @@ describe("inbound_message — at most one active run per contact under concurren
     ).toHaveLength(1);
   });
 });
+
+// Migration 063: "nova entrada de atendimento" — a conversation that was
+// closed/finalized and just had its queue_id/assigned_agent_id cleared by
+// the reopen RPC (meta_reopen_conversation_on_inbound /
+// uazapi_persist_inbound_*_message) must be able to start a fresh triage.
+// The SQL cleanup itself lives in Postgres and isn't exercised by this
+// mock DB (no pgTAP/SQL harness in this repo — see the migration's own
+// "VALIDAÇÃO MANUAL" block for that) — what IS verified here is the half
+// that engine.ts owns: once queueId/assignedAgentId arrive null (because
+// the caller already read the RPC's post-reopen state, not the stale
+// pre-RPC conversation object), `inbound_message` fires exactly like any
+// other never-routed conversation. `status` itself is never part of this
+// decision (see the "routed-conversation guard" describe block above) —
+// that's intentional and unchanged by this migration.
+describe("inbound_message — reopened-conversation scenarios (migration 063)", () => {
+  it("a closed conversation whose routing was just cleared by the reopen RPC starts a fresh triage", async () => {
+    mockDb.tables.flows = [inboundMessageFlow()];
+    mockDb.tables.flow_nodes = queueMenuNodes("flow-inbound");
+    mockDb.tables.queues = baseQueues();
+    // Row shape mirrors what meta_reopen_conversation_on_inbound /
+    // uazapi_persist_inbound_text_message's RETURNING-equivalent state
+    // looks like right after clearing routing on a closed conversation.
+    mockDb.tables.conversations = [
+      { id: "conv-1", account_id: ACCOUNT_A, queue_id: null, assigned_agent_id: null, status: "pending" },
+    ];
+
+    const result = await dispatchInboundToFlows({
+      accountId: ACCOUNT_A,
+      userId: "user-1",
+      contactId: "contact-returning",
+      conversationId: "conv-1",
+      // The values the webhook must pass post-fix: read AFTER the reopen
+      // RPC ran, not the stale pre-RPC queue_id/assigned_agent_id this
+      // same conversation carried while it was still closed.
+      queueId: null,
+      assignedAgentId: null,
+      message: { kind: "text", text: "Oi, voltei", meta_message_id: "m17" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(result.consumed).toBe(true);
+    expect(mockDb.tables.flow_runs).toHaveLength(1);
+  });
+
+  it("the SAME scenario reached via a media message first (image/document) reopening and clearing routing, THEN a text message: mechanically identical to the case above from engine.ts's point of view — it only ever sees queueId/assignedAgentId, never how the conversation got reopened", async () => {
+    mockDb.tables.flows = [inboundMessageFlow()];
+    mockDb.tables.flow_nodes = queueMenuNodes("flow-inbound");
+    mockDb.tables.queues = baseQueues();
+    mockDb.tables.conversations = [
+      { id: "conv-1", account_id: ACCOUNT_A, queue_id: null, assigned_agent_id: null, status: "pending" },
+    ];
+
+    // Step 1 (not modeled here — happens entirely inside
+    // uazapi_persist_inbound_document_message/_image_message, which this
+    // repo has no SQL harness to execute): an image or PDF arrives on a
+    // closed conversation with an old queue_id; migration 063 clears
+    // queue_id/assigned_agent_id and reopens status to 'pending' as part
+    // of that same RPC call. No dispatchInboundToFlows call happens for
+    // that message (document/image persistence doesn't wire into Flows
+    // yet) — only the conversation row above is left in this state.
+
+    // Step 2: the customer's follow-up TEXT message arrives.
+    const result = await dispatchInboundToFlows({
+      accountId: ACCOUNT_A,
+      userId: "user-1",
+      contactId: "contact-returning",
+      conversationId: "conv-1",
+      queueId: null,
+      assignedAgentId: null,
+      message: { kind: "text", text: "Oi, mandei um print antes", meta_message_id: "m18" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(result.consumed).toBe(true);
+    expect(mockDb.tables.flow_runs).toHaveLength(1);
+  });
+});
+
+describe("inbound_message — a prior non-active run never blocks a new dispatch", () => {
+  it("a COMPLETED run from a previous, already-ended conversation does not block a new trigger", async () => {
+    mockDb.tables.flows = [inboundMessageFlow()];
+    mockDb.tables.flow_nodes = queueMenuNodes("flow-inbound");
+    mockDb.tables.queues = baseQueues();
+    mockDb.tables.conversations = [{ id: "conv-1", account_id: ACCOUNT_A, queue_id: null, assigned_agent_id: null }];
+    mockDb.tables.flow_runs = [
+      {
+        id: "run-old",
+        flow_id: "flow-inbound",
+        account_id: ACCOUNT_A,
+        contact_id: "contact-1",
+        status: "completed",
+        started_at: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+
+    const result = await dispatchInboundToFlows({
+      accountId: ACCOUNT_A, userId: "user-1", contactId: "contact-1", conversationId: "conv-1",
+      queueId: null, assignedAgentId: null,
+      message: { kind: "text", text: "Oi de novo", meta_message_id: "m19" }, isFirstInboundMessage: false,
+    });
+
+    expect(result.consumed).toBe(true);
+    expect(mockDb.tables.flow_runs.filter((r) => r.status === "active")).toHaveLength(1);
+  });
+
+  it("a HANDED_OFF or FAILED run from a previous entry does not block a new trigger either", async () => {
+    for (const oldStatus of ["handed_off", "failed", "timed_out"]) {
+      mockDb = createMockDb();
+      mockDb.tables.flows = [inboundMessageFlow()];
+      mockDb.tables.flow_nodes = queueMenuNodes("flow-inbound");
+      mockDb.tables.queues = baseQueues();
+      mockDb.tables.conversations = [{ id: "conv-1", account_id: ACCOUNT_A, queue_id: null, assigned_agent_id: null }];
+      mockDb.tables.flow_runs = [
+        {
+          id: "run-old",
+          flow_id: "flow-inbound",
+          account_id: ACCOUNT_A,
+          contact_id: "contact-1",
+          status: oldStatus,
+          started_at: "2026-01-01T00:00:00.000Z",
+        },
+      ];
+
+      const result = await dispatchInboundToFlows({
+        accountId: ACCOUNT_A, userId: "user-1", contactId: "contact-1", conversationId: "conv-1",
+        queueId: null, assignedAgentId: null,
+        message: { kind: "text", text: "Oi de novo", meta_message_id: `m20-${oldStatus}` }, isFirstInboundMessage: false,
+      });
+
+      expect(result.consumed).toBe(true);
+    }
+  });
+});
