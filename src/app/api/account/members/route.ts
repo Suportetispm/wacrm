@@ -119,7 +119,7 @@ export async function POST(request: Request) {
 
   // Same bucket as invitation create / role change / remove — this
   // is another admin-only member-management action on the same tab.
-  const limit = checkRateLimit(`account:memberCreate:${ctx.userId}`, RATE_LIMITS.adminAction);
+  const limit = await checkRateLimit(`account:memberCreate:${ctx.userId}`, RATE_LIMITS.adminAction);
   if (!limit.success) return rateLimitResponse(limit);
 
   const body = (await request.json().catch(() => null)) as CreateMemberBody | null;

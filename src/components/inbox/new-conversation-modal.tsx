@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
@@ -44,6 +45,7 @@ export function NewConversationModal({
   onOpenChange,
   onCreated,
 }: NewConversationModalProps) {
+  const t = useTranslations("Inbox.newConversation");
   const supabase = createClient();
   const { accountId, user } = useAuth();
 
@@ -135,7 +137,7 @@ export function NewConversationModal({
         contactId,
       );
       if (!result) {
-        toast.error("Não foi possível abrir a conversa. Tente novamente.");
+        toast.error(t("openConversationFailed"));
         return;
       }
       const { data, error } = await supabase
@@ -144,13 +146,13 @@ export function NewConversationModal({
         .eq("id", result.id)
         .maybeSingle();
       if (error || !data) {
-        toast.error("Conversa criada, mas falhou ao carregar. Atualize a página.");
+        toast.error(t("conversationCreatedLoadFailed"));
         return;
       }
       onCreated(normalizeConversation(data));
       onOpenChange(false);
     },
-    [accountId, user, supabase, onCreated, onOpenChange],
+    [accountId, user, supabase, onCreated, onOpenChange, t],
   );
 
   const handleSubmitExisting = useCallback(async () => {
@@ -171,11 +173,11 @@ export function NewConversationModal({
     // the canonical "+<digits>" form. Never the raw formatted input.
     const digits = normalizePhone(phone);
     if (!digits) {
-      toast.error("Informe o telefone.");
+      toast.error(t("phoneRequired"));
       return;
     }
     if (!isValidE164(digits)) {
-      toast.error("Telefone inválido. Use o formato internacional, ex: +5511999999999.");
+      toast.error(t("phoneInvalid"));
       return;
     }
     const canonicalPhone = `+${digits}`;
@@ -218,20 +220,20 @@ export function NewConversationModal({
 
       await openConversationForContact(created.id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Falha ao criar o contato.";
+      const message = err instanceof Error ? err.message : t("createContactFailed");
       toast.error(message);
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, accountId, user, phone, name, supabase, openConversationForContact]);
+  }, [submitting, accountId, user, phone, name, supabase, openConversationForContact, t]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="bg-popover border-border text-popover-foreground sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-popover-foreground">Nova conversa</DialogTitle>
+          <DialogTitle className="text-popover-foreground">{t("title")}</DialogTitle>
           <DialogDescription className="text-muted-foreground">
-            Selecione um contato existente ou crie um novo para iniciar um atendimento.
+            {t("description")}
           </DialogDescription>
         </DialogHeader>
 
@@ -246,7 +248,7 @@ export function NewConversationModal({
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
-            Contato existente
+            {t("tabExisting")}
           </button>
           <button
             type="button"
@@ -258,7 +260,7 @@ export function NewConversationModal({
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
-            Novo contato
+            {t("tabNew")}
           </button>
         </div>
 
@@ -272,7 +274,7 @@ export function NewConversationModal({
                   setSearch(e.target.value);
                   setSelectedContact(null);
                 }}
-                placeholder="Buscar por nome ou telefone…"
+                placeholder={t("searchPlaceholder")}
                 className="bg-muted border-border pl-9 text-foreground placeholder:text-muted-foreground"
               />
             </div>
@@ -285,8 +287,8 @@ export function NewConversationModal({
               ) : results.length === 0 ? (
                 <p className="py-6 text-center text-xs text-muted-foreground">
                   {search.trim()
-                    ? "Nenhum contato encontrado."
-                    : "Digite para buscar um contato."}
+                    ? t("noResults")
+                    : t("typeToSearch")}
                 </p>
               ) : (
                 results.map((c) => (
@@ -311,17 +313,17 @@ export function NewConversationModal({
         ) : (
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label className="text-muted-foreground">Nome</Label>
+              <Label className="text-muted-foreground">{t("nameLabel")}</Label>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Nome do contato (opcional)"
+                placeholder={t("namePlaceholder")}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
               />
             </div>
             <div className="space-y-2">
               <Label className="text-muted-foreground">
-                Telefone <span className="text-red-400">*</span>
+                {t("phoneLabel")} <span className="text-red-400">*</span>
               </Label>
               <Input
                 value={phone}
@@ -330,7 +332,7 @@ export function NewConversationModal({
                   if (dupMatch) setDupMatch(null);
                 }}
                 onBlur={checkNewContactDuplicate}
-                placeholder="+55 11 99999-9999"
+                placeholder={t("phonePlaceholder")}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
               />
               {dupMatch ? (
@@ -345,13 +347,15 @@ export function NewConversationModal({
                   <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                   <span>
                     {dupMatch.exact
-                      ? `Já existe um contato com este número (${dupMatch.contact.name || dupMatch.contact.phone}) — a conversa dele será aberta.`
-                      : "Um contato com número parecido já existe."}
+                      ? t("duplicateExact", {
+                          name: dupMatch.contact.name || dupMatch.contact.phone,
+                        })
+                      : t("duplicateSimilar")}
                   </span>
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Formato internacional, ex: +5511999999999.
+                  {t("phoneFormatHint")}
                 </p>
               )}
             </div>
@@ -365,7 +369,7 @@ export function NewConversationModal({
             onClick={() => onOpenChange(false)}
             className="border-border text-muted-foreground hover:bg-muted"
           >
-            Cancelar
+            {t("cancel")}
           </Button>
           <Button
             type="button"
@@ -378,7 +382,7 @@ export function NewConversationModal({
           >
             {submitting && <Loader2 className="mr-1 size-4 animate-spin" />}
             <UserPlus className="mr-1 size-4" />
-            Iniciar conversa
+            {t("start")}
           </Button>
         </DialogFooter>
       </DialogContent>

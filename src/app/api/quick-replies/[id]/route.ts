@@ -4,6 +4,16 @@ import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 // Update / delete a single quick reply. Quick replies are account-
 // shared, so every mutation is scoped by `account_id` (the service-role
 // client bypasses the agent-gated RLS, so both the role check and the
@@ -78,7 +88,10 @@ export async function PATCH(
     .update(update)
     .eq('id', id)
     .eq('account_id', ctx.accountId)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[quick-replies/[id]] PATCH update failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   return NextResponse.json({ ok: true })
 }
 
@@ -99,6 +112,9 @@ export async function DELETE(
     .delete()
     .eq('id', id)
     .eq('account_id', ctx.accountId)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[quick-replies/[id]] DELETE failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   return NextResponse.json({ ok: true })
 }

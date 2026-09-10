@@ -28,11 +28,29 @@ import {
 } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 
-function getClientIp(request: Request): string {
+/**
+ * Best-effort client IP, hardened against malformed proxy headers.
+ * `x-forwarded-for` can legally contain empty entries from a mangling
+ * proxy (e.g. a leading comma: ",1.2.3.4") — naively taking `[0]`
+ * before trimming would return `""`, which upstream turns into a
+ * shared rate-limit bucket key like `redeem:` for every client that
+ * triggers it. Every candidate is trimmed and empty ones are skipped;
+ * only a genuinely non-empty value is ever returned, else "unknown".
+ */
+export function getClientIp(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0].trim();
+  if (xff) {
+    const firstNonEmpty = xff
+      .split(",")
+      .map((part) => part.trim())
+      .find((part) => part.length > 0);
+    if (firstNonEmpty) return firstNonEmpty;
+  }
   const xri = request.headers.get("x-real-ip");
-  if (xri) return xri.trim();
+  if (xri) {
+    const trimmed = xri.trim();
+    if (trimmed) return trimmed;
+  }
   return "unknown";
 }
 
@@ -58,7 +76,7 @@ export async function POST(
   { params }: { params: Promise<{ token: string }> },
 ) {
   const ip = getClientIp(request);
-  const limit = checkRateLimit(`redeem:${ip}`, RATE_LIMITS.invitationRedeem);
+  const limit = await checkRateLimit(`redeem:${ip}`, RATE_LIMITS.invitationRedeem);
   if (!limit.success) return rateLimitResponse(limit);
 
   const { token } = await params;

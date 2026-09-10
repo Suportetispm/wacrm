@@ -15,7 +15,7 @@ export async function POST(
   try {
     const { supabase, userId } = await getCurrentAccount()
 
-    const limit = checkRateLimit(`ticket:action:${userId}`, RATE_LIMITS.ticketAction)
+    const limit = await checkRateLimit(`ticket:action:${userId}`, RATE_LIMITS.ticketAction)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { id } = await params

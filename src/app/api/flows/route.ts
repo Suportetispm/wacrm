@@ -5,6 +5,16 @@ import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { getFlowTemplate } from '@/lib/flows/templates'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 /**
  * GET /api/flows — list the caller's flows.               (flows.view)
  * POST /api/flows — create a new (draft) flow.             (flows.manage)
@@ -44,7 +54,8 @@ export async function GET() {
     .select('*')
     .order('created_at', { ascending: false })
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[flows] GET failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
   return NextResponse.json({ flows: data ?? [] })
 }
@@ -126,10 +137,8 @@ export async function POST(request: Request) {
       .select()
       .single()
     if (flowErr || !flow) {
-      return NextResponse.json(
-        { error: flowErr?.message ?? 'flow insert failed' },
-        { status: 500 },
-      )
+      console.error('[flows] POST template-clone flow insert failed:', sqlCode(flowErr))
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
     }
     if (template.nodes.length > 0) {
       const { error: nodesErr } = await admin.from('flow_nodes').insert(
@@ -145,10 +154,8 @@ export async function POST(request: Request) {
         // sit as an empty draft. CASCADE on flow_id removes the
         // (probably zero) nodes too.
         await admin.from('flows').delete().eq('id', flow.id)
-        return NextResponse.json(
-          { error: nodesErr.message },
-          { status: 500 },
-        )
+        console.error('[flows] POST template-clone nodes insert failed:', sqlCode(nodesErr))
+        return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
       }
     }
     return NextResponse.json({ flow }, { status: 201 })
@@ -174,10 +181,8 @@ export async function POST(request: Request) {
     .select()
     .single()
   if (error || !data) {
-    return NextResponse.json(
-      { error: error?.message ?? 'insert failed' },
-      { status: 500 },
-    )
+    console.error('[flows] POST insert failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
   return NextResponse.json({ flow: data }, { status: 201 })
 }

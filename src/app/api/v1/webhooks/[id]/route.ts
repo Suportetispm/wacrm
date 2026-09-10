@@ -10,6 +10,7 @@
 import { requireApiKey } from '@/lib/auth/api-context';
 import { ok, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
 import { normalizeEvents } from '@/lib/webhooks/events';
+import { isDeliverableUrl } from '@/lib/webhooks/ssrf';
 import {
   WEBHOOK_PUBLIC_COLUMNS,
   serializeWebhookEndpoint,
@@ -65,6 +66,15 @@ export async function PATCH(
       const url = normalizeWebhookUrl(body.url);
       if (!url) {
         return fail('bad_request', "'url' must be a valid https:// URL", 400);
+      }
+      // Same SSRF guard as POST — an edit can just as easily repoint an
+      // existing, already-trusted endpoint at an internal target.
+      if (!(await isDeliverableUrl(url))) {
+        return fail(
+          'bad_request',
+          "'url' must not point to a private, loopback, or reserved network address",
+          400
+        );
       }
       updates.url = url;
     }

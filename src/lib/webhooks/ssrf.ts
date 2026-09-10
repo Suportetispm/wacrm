@@ -9,13 +9,36 @@
 // services from the app's network.
 //
 // `isDeliverableUrl` resolves the host and rejects any address that is
-// loopback, private, link-local, ULA, or otherwise non-publicly-
-// routable. Combined with `redirect: 'manual'` at the call site (so a
-// public URL can't 3xx-bounce to an internal one), this blocks the
-// common SSRF vectors. It is NOT a defense against DNS rebinding (a
-// host that resolves public here but flips to private before connect) —
-// that needs pinning the resolved IP into the socket, which fetch
-// doesn't expose; documented as a residual risk.
+// loopback, private, link-local, ULA, CGNAT, or otherwise non-publicly-
+// routable — including a hostname that only *resolves* to one of those
+// (every address from `dns.lookup(..., { all: true })` is checked, not
+// just the first), and a literal IP written in a non-standard form
+// (decimal/hex/octal IPv4, or an IPv4-mapped IPv6 host in either its
+// dotted or hex-group form) — the WHATWG URL parser itself canonicalizes
+// all of those into the same literal-IP branch before we ever see them.
+//
+// Called from two places: at webhook registration/edit time (POST/PATCH
+// `/api/v1/webhooks`), so a bad URL 400s immediately instead of sitting
+// around as a disabled endpoint; and again at delivery time
+// (`deliver.ts`), since DNS answers can change between the two. Combined
+// with `redirect: 'manual'` at the delivery call site (so a public URL
+// can't 3xx-bounce to an internal one), this blocks the common SSRF
+// vectors.
+//
+// RESIDUAL RISK — DNS rebinding: this function re-resolves DNS on every
+// call, which closes the *registration-time* TOCTOU window (an attacker
+// can't register a public-looking hostname and flip its DNS record
+// before the check runs, because the check runs again on every
+// delivery). It does NOT close the *delivery-time* window: between this
+// check returning true and `fetch()` itself resolving + connecting a
+// few milliseconds later, a hostname with a very low/zero DNS TTL could
+// answer differently and land on a private address. Eliminating that
+// fully requires pinning the exact IP this function validated into the
+// actual socket (e.g. a custom undici `Agent`/`lookup` dispatcher), which
+// this module does not attempt — the current architecture only
+// re-validates before each attempt, it doesn't pin the connection. Given
+// the short (5s) delivery timeout and single-attempt semantics, the
+// exploitable window is narrow but not zero.
 // ============================================================
 
 import { lookup } from 'node:dns/promises';
@@ -42,8 +65,26 @@ export function isPrivateOrReservedIp(ip: string): boolean {
   if (v6.startsWith('fe8') || v6.startsWith('fe9') || v6.startsWith('fea') || v6.startsWith('feb'))
     return true; // fe80::/10 link-local
   if (v6.startsWith('fc') || v6.startsWith('fd')) return true; // fc00::/7 ULA
-  const mapped = v6.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (mapped) return isPrivateOrReservedIp(mapped[1]); // IPv4-mapped
+
+  // IPv4-mapped (::ffff:a.b.c.d). This is the form DNS resolvers
+  // typically hand back via inet_ntop.
+  const mappedDotted = v6.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mappedDotted) return isPrivateOrReservedIp(mappedDotted[1]);
+
+  // IPv4-mapped, hex-group form (::ffff:7f00:1). This is what the
+  // WHATWG URL parser normalizes a *literal* bracketed IPv6 host to —
+  // `new URL('https://[::ffff:127.0.0.1]/x').hostname` is
+  // `[::ffff:7f00:1]`, never the dotted form. Without this branch,
+  // that literal URL would sail through as "not private".
+  const mappedHex = v6.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16);
+    const lo = parseInt(mappedHex[2], 16);
+    return isPrivateOrReservedIp(
+      `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
+    );
+  }
+
   return false;
 }
 

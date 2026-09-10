@@ -1,6 +1,16 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 
+const GENERIC_ERROR = 'Failed to load flow runs'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 /**
  * GET /api/flows/[id]/runs
  *
@@ -53,7 +63,8 @@ export async function GET(
     .order('started_at', { ascending: false })
     .limit(50)
   if (runsErr) {
-    return NextResponse.json({ error: runsErr.message }, { status: 500 })
+    console.error('[flows/[id]/runs] GET runs failed:', sqlCode(runsErr))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
 
   const runIds = (runs ?? []).map((r) => (r as { id: string }).id)
@@ -72,7 +83,7 @@ export async function GET(
       .order('created_at', { ascending: true })
     if (evsErr) {
       // Non-fatal — the page can still show runs without timelines.
-      console.error('[flows-runs] events fetch failed:', evsErr.message)
+      console.error('[flows/[id]/runs] events fetch failed:', sqlCode(evsErr))
     } else if (evs) {
       events = evs as typeof events
     }

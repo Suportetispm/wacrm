@@ -27,7 +27,7 @@ export async function POST(
     return toPlatformErrorResponse(err)
   }
 
-  const limit = checkRateLimit(`platform:permissionsReset:${ctx.userId}`, RATE_LIMITS.platformAdminAction)
+  const limit = await checkRateLimit(`platform:permissionsReset:${ctx.userId}`, RATE_LIMITS.platformAdminAction)
   if (!limit.success) return rateLimitResponse(limit)
 
   const { id } = await params

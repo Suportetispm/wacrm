@@ -78,7 +78,7 @@ export async function PUT(
     return toPlatformErrorResponse(err)
   }
 
-  const limit = checkRateLimit(`platform:permissionsUpdate:${ctx.userId}`, RATE_LIMITS.platformAdminAction)
+  const limit = await checkRateLimit(`platform:permissionsUpdate:${ctx.userId}`, RATE_LIMITS.platformAdminAction)
   if (!limit.success) return rateLimitResponse(limit)
 
   const { id } = await params

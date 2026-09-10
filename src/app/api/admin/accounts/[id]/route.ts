@@ -59,7 +59,7 @@ export async function PATCH(
     return toPlatformErrorResponse(err)
   }
 
-  const limit = checkRateLimit(
+  const limit = await checkRateLimit(
     `platform:accountUpdate:${ctx.userId}`,
     RATE_LIMITS.platformAdminAction,
   )

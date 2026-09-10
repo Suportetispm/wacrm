@@ -1,25 +1,43 @@
 /**
- * In-memory per-key rate limiter.
+ * Shared, cross-instance rate limiter.
  *
- * Fixed-window counter (not token bucket): every identifier gets a
- * fresh N-request budget each window. Simple, allocation-light, and
- * fine for a single-instance VPS — which is how forkers of this
- * template will usually deploy.
+ * Primary store: a Postgres table (`rate_limit_buckets`) written
+ * through the atomic `rate_limit_check()` RPC (see
+ * supabase/migrations/066_rate_limit_shared_store.sql — NOT applied
+ * yet, see that file's header). Every instance/replica/serverless
+ * invocation hits the same row for a given key, so the limit is
+ * actually enforced account/user/key-wide instead of per-process.
  *
- * Trade-off: a single Node process holds the Map, so horizontal scale
- * (multiple regions, multiple Hostinger nodes, Vercel serverless fan-
- * out) silently defeats the limit. If you scale beyond one instance,
- * swap the `check` implementation for Redis / Upstash / Cloudflare
- * Durable Objects keeping the same return shape. The call sites won't
- * change.
- *
- * Memory: entries are ~50 bytes each. With LIGHT_SWEEP below, expired
- * keys get cleared opportunistically on every ~1 000th call, so a
- * healthy instance stays in the low-MB range even with thousands of
- * distinct users. No background timer — works in serverless edge
- * runtimes that don't keep timers alive across requests.
+ * FAILOVER — deliberate design decision, not an oversight: if the
+ * Postgres call itself fails (network blip, DB restart, missing
+ * service-role env in a misconfigured deploy), `checkRateLimit` does
+ * NOT fail open (unlimited) NOR fail fully closed (reject every
+ * request app-wide). It falls back to the exact in-memory fixed-window
+ * counter this module used before this change. Rationale:
+ *   - None of the buckets below gate authentication or a security
+ *     boundary — the real authorization checks (requireRole,
+ *     is_account_member, RLS, API-key scopes) are enforced
+ *     independently and are NOT part of this module. These buckets
+ *     only bound abuse/cost (spam sends, LLM spend, admin-action
+ *     scripting, public-API hammering).
+ *   - Fully failing closed here would turn a transient Postgres hiccup
+ *     into a site-wide outage for something that is, by design, a
+ *     secondary defense — worse than the problem it's meant to solve.
+ *   - Fully failing open (always allow) would silently disable every
+ *     budget in this file for the duration of the incident with zero
+ *     trace besides a log line.
+ *   - Falling back to the pre-existing per-instance in-memory limiter
+ *     keeps *some* real bound in place (as good as this project's
+ *     behavior before this migration) while the shared store is down,
+ *     and every failure is logged so an operator can see it happened.
+ * Residual risk: during a shared-store outage, the effective limit
+ * reverts to "per-instance" — a caller hitting N different instances
+ * can get roughly N× the intended budget until the store recovers.
+ * That's the same ceiling this project already lived with in
+ * production before today; it is not a new exposure.
  */
 
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 
 export interface RateLimitOptions {
@@ -38,6 +56,60 @@ export interface RateLimitResult {
   limit: number;
 }
 
+// ------------------------------------------------------------
+// Primary store — Postgres RPC (rate_limit_check), service-role.
+//
+// Lazy, shared client — mirrors the identical pattern in
+// src/lib/flows/admin-client.ts, src/lib/automations/admin-client.ts,
+// etc. Not exported: nothing outside this module needs it, and every
+// other domain that needs a service-role client keeps its own copy by
+// this project's convention rather than sharing one generic export.
+// ------------------------------------------------------------
+let _adminClient: SupabaseClient | null = null;
+
+function rateLimitAdminClient(): SupabaseClient {
+  if (!_adminClient) {
+    _adminClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+  }
+  return _adminClient;
+}
+
+interface RpcRow {
+  allowed: boolean;
+  count: number;
+  reset_at: string;
+}
+
+async function checkRateLimitShared(
+  key: string,
+  { limit, windowMs }: RateLimitOptions,
+): Promise<RateLimitResult> {
+  const { data, error } = await rateLimitAdminClient().rpc('rate_limit_check', {
+    p_key: key,
+    p_limit: limit,
+    p_window_ms: windowMs,
+  });
+  if (error) throw error;
+
+  const row = (Array.isArray(data) ? data[0] : data) as RpcRow | null;
+  if (!row) throw new Error('rate_limit_check returned no row');
+
+  return {
+    success: Boolean(row.allowed),
+    remaining: Math.max(0, limit - Number(row.count)),
+    reset: new Date(row.reset_at).getTime(),
+    limit,
+  };
+}
+
+// ------------------------------------------------------------
+// Fallback store — in-memory per-process fixed-window counter. This
+// is the module's entire pre-migration implementation, kept verbatim
+// as the degraded path used only when checkRateLimitShared() throws.
+// ------------------------------------------------------------
 interface Entry {
   count: number;
   resetAt: number;
@@ -57,7 +129,7 @@ function sweepExpired(now: number) {
   }
 }
 
-export function checkRateLimit(
+function checkRateLimitInMemory(
   key: string,
   { limit, windowMs }: RateLimitOptions,
 ): RateLimitResult {
@@ -87,6 +159,27 @@ export function checkRateLimit(
     reset: entry.resetAt,
     limit,
   };
+}
+
+/**
+ * Check + consume one request against `key`'s budget. Always tries
+ * the shared Postgres store first; falls back to the per-process
+ * in-memory counter only if that call throws (see file header for
+ * why this isn't fail-open or fail-closed).
+ */
+export async function checkRateLimit(
+  key: string,
+  options: RateLimitOptions,
+): Promise<RateLimitResult> {
+  try {
+    return await checkRateLimitShared(key, options);
+  } catch (err) {
+    console.error(
+      `[rate-limit] shared store unavailable for key "${key}" — falling back to per-instance limiting:`,
+      err,
+    );
+    return checkRateLimitInMemory(key, options);
+  }
 }
 
 /**
@@ -149,9 +242,9 @@ export const RATE_LIMITS = {
   /** Public REST API (`/api/v1/*`), keyed per API key. 120/min ≈ 2
    *  req/s sustained — comfortable for a polling integration or an
    *  automation firing on inbound events, while bounding a runaway
-   *  script. Like every bucket here it's per-process; a multi-
-   *  instance deploy needs the Redis swap described at the top of
-   *  this file (the per-key call sites don't change). */
+   *  script. Enforced against the shared store, so this budget now
+   *  holds regardless of how many instances/replicas serve the
+   *  request (see file header). */
   publicApi: { limit: 120, windowMs: 60_000 },
   /** AI draft-reply generation, per user. 20/min is generous for an
    *  agent clicking "Draft with AI" while working a thread, and bounds
@@ -181,8 +274,11 @@ export const RATE_LIMITS = {
   aiAutoReplyAccount: { limit: 30, windowMs: 60_000 },
 } as const;
 
-/** Test-only helper. Clears the in-memory state so unit tests don't
- *  leak buckets across files. Not wired up in production code. */
+/** Test-only helper. Clears the in-memory fallback state so unit
+ *  tests don't leak buckets across files. Not wired up in production
+ *  code. Does not touch the shared Postgres store — tests never reach
+ *  it (no Supabase env configured under vitest), so every test run
+ *  exercises the in-memory fallback path by construction. */
 export function __resetRateLimitForTests() {
   buckets.clear();
   callsSinceSweep = 0;

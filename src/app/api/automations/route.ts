@@ -10,6 +10,16 @@ import {
   validateTriggerForActivation,
 } from '@/lib/automations/validate'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 export async function GET() {
   // automations.view — owner/admin/viewer sem gate de papel (mesmo
   // comportamento de antes da FASE 1); um agent segue override-ou-default.
@@ -29,7 +39,10 @@ export async function GET() {
     .from('automations')
     .select('*')
     .order('created_at', { ascending: false })
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[automations] GET failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   return NextResponse.json({ automations: data ?? [] })
 }
 
@@ -130,13 +143,13 @@ export async function POST(request: Request) {
     .single()
 
   if (insertErr || !automation) {
-    return NextResponse.json(
-      { error: insertErr?.message ?? 'insert failed' },
-      { status: 500 },
-    )
+    console.error('[automations] POST insert failed:', sqlCode(insertErr))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
 
   if (effectiveSteps && effectiveSteps.length > 0) {
+    // insertSteps() already logs the underlying sqlCode server-side and
+    // returns a generic, client-safe message on failure.
     const err = await insertSteps(automation.id, effectiveSteps)
     if (err) return NextResponse.json({ error: err }, { status: 500 })
   }

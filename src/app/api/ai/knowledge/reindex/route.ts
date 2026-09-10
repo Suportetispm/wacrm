@@ -16,7 +16,7 @@ import { AiError } from '@/lib/ai/types'
 export async function POST() {
   try {
     const { supabase, accountId, userId } = await requireRole('admin')
-    const limit = checkRateLimit(`ai-kb-reindex:${userId}`, RATE_LIMITS.adminAction)
+    const limit = await checkRateLimit(`ai-kb-reindex:${userId}`, RATE_LIMITS.adminAction)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { data: docs, error } = await supabase

@@ -29,6 +29,15 @@ describe('isPrivateOrReservedIp', () => {
     }
     expect(isPrivateOrReservedIp('2606:4700:4700::1111')).toBe(false);
   });
+
+  it('flags IPv4-mapped loopback written as hex groups (WHATWG URL canonical form)', () => {
+    // `new URL('https://[::ffff:127.0.0.1]/x').hostname` normalizes to
+    // `[::ffff:7f00:1]`, not the dotted form — this must be caught too.
+    for (const ip of ['::ffff:7f00:1', '::ffff:a9fe:a9fe']) {
+      expect(isPrivateOrReservedIp(ip)).toBe(true);
+    }
+    expect(isPrivateOrReservedIp('::ffff:0808:0808')).toBe(false); // 8.8.8.8
+  });
 });
 
 describe('isDeliverableUrl', () => {
@@ -38,6 +47,25 @@ describe('isDeliverableUrl', () => {
     expect(await isDeliverableUrl('https://[::1]/hook')).toBe(false);
     expect(await isDeliverableUrl('https://localhost/hook')).toBe(false);
     expect(await isDeliverableUrl('https://foo.internal/hook')).toBe(false);
+  });
+
+  it('rejects an IPv4-mapped loopback given as a literal bracketed IPv6 host', async () => {
+    // Regression test: the WHATWG URL parser rewrites this to
+    // `[::ffff:7f00:1]` before we ever see it, and the previous guard
+    // only recognized the dotted-decimal mapped form — this exact URL
+    // was reachable/deliverable before the ssrf.ts fix.
+    expect(await isDeliverableUrl('https://[::ffff:127.0.0.1]/hook')).toBe(false);
+  });
+
+  it('rejects alternative IPv4 notations (decimal, hex, octal, shorthand)', async () => {
+    // The WHATWG URL parser itself canonicalizes all of these to
+    // dotted-decimal before `.hostname` is read, so they hit the same
+    // literal-IP branch as `127.0.0.1` — asserted here so a future
+    // change to that assumption doesn't silently reopen the bypass.
+    expect(await isDeliverableUrl('https://2130706433/hook')).toBe(false); // decimal
+    expect(await isDeliverableUrl('https://0x7f000001/hook')).toBe(false); // hex
+    expect(await isDeliverableUrl('https://0177.0.0.1/hook')).toBe(false); // octal
+    expect(await isDeliverableUrl('https://127.1/hook')).toBe(false); // shorthand
   });
 
   it('rejects a malformed URL', async () => {

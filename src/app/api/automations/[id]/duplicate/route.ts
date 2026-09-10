@@ -3,6 +3,16 @@ import { toErrorResponse } from '@/lib/auth/account'
 import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -29,7 +39,10 @@ export async function POST(
     .eq('account_id', ctx.accountId)
     .eq('user_id', ctx.userId)
     .maybeSingle()
-  if (origErr) return NextResponse.json({ error: origErr.message }, { status: 500 })
+  if (origErr) {
+    console.error('[automations/[id]/duplicate] source lookup failed:', sqlCode(origErr))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   if (!original) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   const { data: copy, error: copyErr } = await admin
@@ -50,7 +63,8 @@ export async function POST(
     .select()
     .single()
   if (copyErr || !copy) {
-    return NextResponse.json({ error: copyErr?.message ?? 'copy failed' }, { status: 500 })
+    console.error('[automations/[id]/duplicate] copy insert failed:', sqlCode(copyErr))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
 
   const { data: steps } = await admin
@@ -79,7 +93,10 @@ export async function POST(
       position: row.position,
     }))
     const { error: insErr } = await admin.from('automation_steps').insert(rows)
-    if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 })
+    if (insErr) {
+      console.error('[automations/[id]/duplicate] steps insert failed:', sqlCode(insErr))
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+    }
   }
 
   return NextResponse.json({ automation: copy }, { status: 201 })

@@ -12,6 +12,16 @@ import {
   validateTriggerForActivation,
 } from '@/lib/automations/validate'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -38,10 +48,19 @@ export async function GET(
     .eq('user_id', ctx.userId)
     .maybeSingle()
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[automations/[id]] GET failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   if (!automation) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const steps = await loadStepsTree(id)
+  let steps
+  try {
+    steps = await loadStepsTree(id)
+  } catch (err) {
+    console.error('[automations/[id]] GET steps load failed:', err)
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   return NextResponse.json({ automation, steps })
 }
 
@@ -99,9 +118,15 @@ export async function PATCH(
   if (willBeActive) {
     const mergedTriggerType = (update.trigger_type ?? existing.trigger_type) as string
     const mergedTriggerConfig = update.trigger_config ?? existing.trigger_config
-    const mergedSteps = Array.isArray(body.steps)
-      ? (body.steps as { step_type: string; step_config: Record<string, unknown> }[])
-      : await loadStepsTree(id)
+    let mergedSteps
+    try {
+      mergedSteps = Array.isArray(body.steps)
+        ? (body.steps as { step_type: string; step_config: Record<string, unknown> }[])
+        : await loadStepsTree(id)
+    } catch (err) {
+      console.error('[automations/[id]] PATCH steps load failed:', err)
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+    }
     const issues = [
       ...validateTriggerForActivation(mergedTriggerType, mergedTriggerConfig),
       ...validateStepsForActivation(mergedSteps),
@@ -123,10 +148,15 @@ export async function PATCH(
       .update(update)
       .eq('id', id)
       .eq('account_id', ctx.accountId)
-    if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 })
+    if (updErr) {
+      console.error('[automations/[id]] PATCH update failed:', sqlCode(updErr))
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+    }
   }
 
   if (Array.isArray(body.steps)) {
+    // replaceSteps() already logs the underlying sqlCode server-side and
+    // returns a generic, client-safe message on failure.
     const err = await replaceSteps(id, body.steps as BuilderStepInput[])
     if (err) return NextResponse.json({ error: err }, { status: 500 })
   }
@@ -156,6 +186,9 @@ export async function DELETE(
     .eq('id', id)
     .eq('account_id', ctx.accountId)
     .eq('user_id', ctx.userId)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[automations/[id]] DELETE failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   return NextResponse.json({ ok: true })
 }

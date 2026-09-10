@@ -11,6 +11,7 @@ import { requireApiKey } from '@/lib/auth/api-context';
 import { ok, okList, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
 import { encrypt } from '@/lib/whatsapp/encryption';
 import { normalizeEvents } from '@/lib/webhooks/events';
+import { isDeliverableUrl } from '@/lib/webhooks/ssrf';
 import {
   WEBHOOK_PUBLIC_COLUMNS,
   serializeWebhookEndpoint,
@@ -61,6 +62,20 @@ export async function POST(request: Request) {
     const url = normalizeWebhookUrl(body.url);
     if (!url) {
       return fail('bad_request', "'url' must be a valid https:// URL", 400);
+    }
+
+    // SSRF guard: reject a target that resolves to loopback, a private
+    // (RFC1918), link-local (incl. cloud metadata), or otherwise
+    // non-publicly-routable address at registration time — not just at
+    // delivery time — so a bad URL 400s immediately instead of sitting
+    // around as a disabled/failing endpoint. Fail-closed: a lookup
+    // error or an empty result also rejects (see isDeliverableUrl).
+    if (!(await isDeliverableUrl(url))) {
+      return fail(
+        'bad_request',
+        "'url' must not point to a private, loopback, or reserved network address",
+        400
+      );
     }
 
     const events = normalizeEvents(body.events);

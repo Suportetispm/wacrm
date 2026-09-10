@@ -5,6 +5,16 @@ import { resumePendingExecution } from '@/lib/automations/engine'
 import type { AutomationContext } from '@/lib/automations/engine'
 import { getActiveAccountIds } from '@/lib/accounts/active'
 
+const GENERIC_ERROR = 'Failed to drain automation queue'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 /**
  * Drain due `automation_pending_executions` rows. Meant to be hit
  * on a schedule (Vercel Cron / external pinger) — requires a shared
@@ -40,7 +50,10 @@ export async function GET(request: Request) {
     .order('run_at', { ascending: true })
     .limit(50)
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[automations-cron] due-rows scan failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+  }
   if (!due || due.length === 0) return NextResponse.json({ processed: 0 })
 
   // Empresa desativada: pula sem reivindicar (status continua

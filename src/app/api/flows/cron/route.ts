@@ -4,6 +4,16 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { resolveFallbackPolicy } from '@/lib/flows/fallback'
 import { getActiveAccountIds } from '@/lib/accounts/active'
 
+const GENERIC_ERROR = 'Failed to sweep flow runs'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 /**
  * Sweep abandoned active flow runs.
  *
@@ -60,8 +70,8 @@ export async function GET(request: Request) {
     .eq('status', 'active')
 
   if (error) {
-    console.error('[flows-cron] active-run scan failed:', error.message)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[flows-cron] active-run scan failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
   if (!runs?.length) return NextResponse.json({ swept: 0 })
 

@@ -35,7 +35,15 @@ function makeSupabaseMock() {
     const selectResult = () => {
       switch (table) {
         case 'profiles':
-          return { data: { account_id: 'acct-1' }, error: null }
+          // getCurrentAccount()/requireRole('agent') need account_role +
+          // is_active on top of account_id — the route now resolves the
+          // caller's context this way instead of a bare account_id lookup.
+          return {
+            data: { account_id: 'acct-1', account_role: 'agent', is_active: true },
+            error: null,
+          }
+        case 'accounts':
+          return { data: { id: 'acct-1', name: 'Acme' }, error: null }
         case 'contacts':
           return { data: contactRow, error: null }
         case 'conversations':

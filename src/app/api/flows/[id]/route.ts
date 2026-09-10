@@ -4,6 +4,16 @@ import { toErrorResponse } from '@/lib/auth/account'
 import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 /**
  * GET   /api/flows/[id]  — fetch one flow with its nodes.
  * PUT   /api/flows/[id]  — replace name/trigger/entry/fallback + the
@@ -150,7 +160,8 @@ export async function PUT(
     .update(flowPatch)
     .eq('id', id)
   if (updErr) {
-    return NextResponse.json({ error: updErr.message }, { status: 500 })
+    console.error('[flows/[id]] PUT flow update failed:', sqlCode(updErr))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
 
   if (body.nodes !== undefined) {
@@ -161,7 +172,8 @@ export async function PUT(
       .delete()
       .eq('flow_id', id)
     if (delErr) {
-      return NextResponse.json({ error: delErr.message }, { status: 500 })
+      console.error('[flows/[id]] PUT nodes delete failed:', sqlCode(delErr))
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
     }
     if (body.nodes.length > 0) {
       const { error: insErr } = await admin.from('flow_nodes').insert(
@@ -175,7 +187,8 @@ export async function PUT(
         })),
       )
       if (insErr) {
-        return NextResponse.json({ error: insErr.message }, { status: 500 })
+        console.error('[flows/[id]] PUT nodes insert failed:', sqlCode(insErr))
+        return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
       }
     }
   }
@@ -217,7 +230,8 @@ export async function DELETE(
   // free up the contact for new triggers immediately.
   const { error } = await supabaseAdmin().from('flows').delete().eq('id', id)
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[flows/[id]] DELETE failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
   return NextResponse.json({ ok: true })
 }

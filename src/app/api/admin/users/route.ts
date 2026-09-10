@@ -148,7 +148,7 @@ export async function POST(request: Request) {
     return toPlatformErrorResponse(err)
   }
 
-  const limit = checkRateLimit(`platform:userCreate:${ctx.userId}`, RATE_LIMITS.platformAdminAction)
+  const limit = await checkRateLimit(`platform:userCreate:${ctx.userId}`, RATE_LIMITS.platformAdminAction)
   if (!limit.success) return rateLimitResponse(limit)
 
   const body = (await request.json().catch(() => null)) as CreateUserBody | null

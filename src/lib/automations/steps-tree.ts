@@ -1,5 +1,15 @@
 import { supabaseAdmin } from './admin-client'
 
+const GENERIC_STEPS_ERROR = 'Failed to process automation steps'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 // ------------------------------------------------------------
 // Builder payload → flat rows for automation_steps.
 // Root steps arrive in order. A Condition step carries its children
@@ -42,7 +52,10 @@ export async function replaceSteps(
     .from('automation_steps')
     .delete()
     .eq('automation_id', automationId)
-  if (delErr) return delErr.message
+  if (delErr) {
+    console.error('[automations/steps-tree] replaceSteps delete failed:', sqlCode(delErr))
+    return GENERIC_STEPS_ERROR
+  }
   return insertSteps(automationId, input)
 }
 
@@ -84,7 +97,11 @@ export async function insertSteps(
 
   if (rows.length === 0) return null
   const { error } = await supabaseAdmin().from('automation_steps').insert(rows)
-  return error?.message ?? null
+  if (error) {
+    console.error('[automations/steps-tree] insertSteps failed:', sqlCode(error))
+    return GENERIC_STEPS_ERROR
+  }
+  return null
 }
 
 function seedsToTree(seeds: BuilderStepInput[]): BuilderStepInput[] {
@@ -132,7 +149,10 @@ export async function loadStepsTree(automationId: string): Promise<BuilderStepNo
     .eq('automation_id', automationId)
     .order('position', { ascending: true })
 
-  if (error) throw new Error(error.message)
+  if (error) {
+    console.error('[automations/steps-tree] loadStepsTree failed:', sqlCode(error))
+    throw new Error(GENERIC_STEPS_ERROR)
+  }
   const rows = (data ?? []) as DbStep[]
 
   const byId = new Map<string, BuilderStepNode>()

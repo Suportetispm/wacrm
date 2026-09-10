@@ -5,6 +5,16 @@ import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 /**
  * POST /api/flows/[id]/activate
  *
@@ -114,7 +124,8 @@ export async function POST(
     .select()
     .maybeSingle()
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[flows/[id]/activate] status update failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
   return NextResponse.json({ flow: updated })
 }

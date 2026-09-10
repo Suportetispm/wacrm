@@ -38,53 +38,40 @@ const MASKED_TOKEN = '••••••••••••••••';
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
 type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
 
-const UAZAPI_STATUS_LABEL_PT: Record<UazapiInstanceStatus, string> = {
-  disconnected: 'Desconectado',
-  connecting: 'Aguardando conexão',
-  connected: 'Conectado',
-  hibernated: 'Hibernado',
-};
-
 type UazapiWebhookState = 'unknown' | 'checking' | 'active' | 'not_configured' | 'disabled' | 'error';
 
-const UAZAPI_WEBHOOK_STATE_LABEL_PT: Record<UazapiWebhookState, string> = {
-  unknown: 'Desconhecido',
-  checking: 'Verificando…',
-  active: 'Ativo',
-  not_configured: 'Não configurado',
-  disabled: 'Desativado',
-  error: 'Erro ao verificar',
-};
+type WhatsappT = ReturnType<typeof useTranslations>;
 
-/** Maps a failed fetch to PT-BR copy + whether it means "instance is
+/** Maps a failed fetch to translated copy + whether it means "instance is
  *  gone/invalid" (→ offer recreate) vs. everything else (→ just an
  *  error message, no recreate offered). Shared by every UAZAPI call
  *  in this component so 401/403/409/500/502 are handled uniformly. */
 function describeUazapiFetchError(
   status: number,
   data: { error?: string; code?: string } | undefined,
+  t: WhatsappT,
 ): { message: string; instanceInvalid: boolean } {
   if (data?.code === 'instance_invalid') {
     return {
-      message: data.error || 'A instância UAZAPI não foi encontrada ou é inválida.',
+      message: data.error || t('uazapiErrors.instanceInvalid'),
       instanceInvalid: true,
     };
   }
   if (status === 401) {
-    return { message: 'Sessão expirada. Atualize a página e faça login novamente.', instanceInvalid: false };
+    return { message: t('uazapiErrors.sessionExpired'), instanceInvalid: false };
   }
   if (status === 403) {
     return {
-      message: 'Você não tem permissão para esta ação. Fale com um administrador da conta.',
+      message: t('uazapiErrors.forbidden'),
       instanceInvalid: false,
     };
   }
   if (status === 500) {
-    return { message: 'Erro interno do servidor. Tente novamente em instantes.', instanceInvalid: false };
+    return { message: t('uazapiErrors.serverError'), instanceInvalid: false };
   }
   // 409 (concurrency/incomplete-config) and 502 (UAZAPI unreachable)
   // already carry a human-readable message from the route itself.
-  return { message: data?.error || 'Erro desconhecido.', instanceInvalid: false };
+  return { message: data?.error || t('uazapiErrors.unknown'), instanceInvalid: false };
 }
 
 export function WhatsAppConfig() {
@@ -232,11 +219,11 @@ export function WhatsAppConfig() {
       }
     } catch (err) {
       console.error('fetchConfig error:', err);
-      toast.error('Failed to load WhatsApp configuration');
+      toast.error(t('toasts.loadConfigFailed'));
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, [supabase, t]);
 
   useEffect(() => {
     // Need both the auth session (`!authLoading`) AND the profile
@@ -263,11 +250,11 @@ export function WhatsAppConfig() {
       return;
     }
     if (!phoneNumberId.trim()) {
-      toast.error('Phone Number ID is required');
+      toast.error(t('toasts.phoneNumberRequired'));
       return;
     }
     if (!config && (!accessToken.trim() || !tokenEdited)) {
-      toast.error('Access Token is required for initial setup');
+      toast.error(t('toasts.accessTokenRequired'));
       return;
     }
 
@@ -295,7 +282,7 @@ export function WhatsAppConfig() {
         // server. But our POST handler requires an access_token to verify
         // with Meta. If the user didn't change the token, we need to signal
         // that. Simplest: require token re-entry if they're updating.
-        toast.error('Please re-enter the Access Token to save changes');
+        toast.error(t('toasts.reenterToken'));
         setSaving(false);
         return;
       }
@@ -309,7 +296,7 @@ export function WhatsAppConfig() {
       const data = await res.json();
 
       if (!res.ok) {
-        toast.error(data.error || 'Failed to save configuration');
+        toast.error(data.error || t('toasts.saveFailed'));
         setSaving(false);
         return;
       }
@@ -322,7 +309,7 @@ export function WhatsAppConfig() {
       //                         is human-readable from Meta.
       if (data.registered === false && data.registration_error) {
         toast.error(
-          `Saved, but Meta couldn't register the number: ${data.registration_error}`,
+          t('toasts.savedButNotRegistered', { error: data.registration_error }),
           { duration: 12000 },
         );
       } else if (data.registration_skipped) {
@@ -331,15 +318,15 @@ export function WhatsAppConfig() {
         // Don't claim the number is "Live" — point at the
         // Registration status banner instead.
         toast.success(
-          'Credentials saved and verified. Inbound registration was skipped (no PIN) — see Registration status below.',
+          t('toasts.savedSkippedRegistration'),
           { duration: 10000 },
         );
         setPin('');
       } else {
         toast.success(
           data.phone_info?.verified_name
-            ? `Live — ${data.phone_info.verified_name} can now receive events.`
-            : 'WhatsApp connected. Events will start flowing within a minute.',
+            ? t('toasts.liveWithName', { name: data.phone_info.verified_name })
+            : t('toasts.connectedGeneric'),
         );
         // Clear the PIN so subsequent saves don't accidentally
         // re-register (which would void the active subscription if
@@ -350,7 +337,7 @@ export function WhatsAppConfig() {
       if (accountId) await fetchConfig(accountId);
     } catch (err) {
       console.error('Save error:', err);
-      toast.error('Failed to save configuration');
+      toast.error(t('toasts.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -368,19 +355,19 @@ export function WhatsAppConfig() {
         setStatusMessage('');
         toast.success(
           payload.phone_info?.verified_name
-            ? `Connected to ${payload.phone_info.verified_name}`
-            : 'API connection successful'
+            ? t('toasts.connectedWithName', { name: payload.phone_info.verified_name })
+            : t('toasts.connectionSuccessful')
         );
       } else {
         setConnectionStatus('disconnected');
         setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
         setStatusMessage(payload.message || '');
-        toast.error(payload.message || 'API connection failed');
+        toast.error(payload.message || t('toasts.connectionFailedGeneric'));
       }
     } catch (err) {
       console.error('Test connection error:', err);
       setConnectionStatus('disconnected');
-      toast.error('Connection test failed. Check network and try again.');
+      toast.error(t('toasts.connectionTestFailed'));
     } finally {
       setTesting(false);
     }
@@ -396,24 +383,24 @@ export function WhatsAppConfig() {
       const data = (await res.json()) as RegistrationProbe;
       setRegistrationProbe(data);
       if (data.live) {
-        toast.success('Number is fully wired — Meta is delivering events.');
+        toast.success(t('toasts.verifiedLive'));
       } else {
         toast.error(
-          'Number is not fully registered. See the checks below for which step failed.',
+          t('toasts.verifiedNotLive'),
           { duration: 8000 },
         );
       }
       if (accountId) await fetchConfig(accountId);
     } catch (err) {
       console.error('verify-registration failed:', err);
-      toast.error('Could not reach the verification endpoint.');
+      toast.error(t('toasts.verifyEndpointUnreachable'));
     } finally {
       setVerifyingRegistration(false);
     }
   }
 
   async function handleReset() {
-    if (!confirm('This will delete the current WhatsApp config so you can re-enter it. Continue?')) {
+    if (!confirm(t('confirms.resetConfig'))) {
       return;
     }
 
@@ -423,11 +410,11 @@ export function WhatsAppConfig() {
       const data = await res.json();
 
       if (!res.ok) {
-        toast.error(data.error || 'Failed to reset configuration');
+        toast.error(data.error || t('toasts.resetFailedGeneric'));
         return;
       }
 
-      toast.success('Configuration cleared. You can now re-enter your credentials.');
+      toast.success(t('toasts.resetSuccess'));
       setConfig(null);
       setPhoneNumberId('');
       setWabaId('');
@@ -442,7 +429,7 @@ export function WhatsAppConfig() {
       setShowMetaFallback(false);
     } catch (err) {
       console.error('Reset error:', err);
-      toast.error('Failed to reset configuration');
+      toast.error(t('toasts.resetFailedGeneric'));
     } finally {
       setResetting(false);
     }
@@ -495,7 +482,7 @@ export function WhatsAppConfig() {
       const res = await fetch('/api/uazapi/status', { method: 'GET' });
       const data = await res.json();
       if (!res.ok) {
-        const { message, instanceInvalid } = describeUazapiFetchError(res.status, data);
+        const { message, instanceInvalid } = describeUazapiFetchError(res.status, data, t);
         setUazapiInstanceInvalid(instanceInvalid);
         setUazapiError(instanceInvalid ? null : message);
         return instanceInvalid ? 'invalid' : null;
@@ -521,10 +508,10 @@ export function WhatsAppConfig() {
       return data.status as UazapiInstanceStatus;
     } catch (err) {
       console.error('uazapi status refresh failed:', err);
-      setUazapiError('Erro de rede ao consultar status.');
+      setUazapiError(t('uazapiErrors.statusCheckFailed'));
       return null;
     }
-  }, [refreshUazapiWebhookStatus]);
+  }, [refreshUazapiWebhookStatus, t]);
 
   const startUazapiPolling = useCallback(() => {
     stopUazapiPolling();
@@ -538,9 +525,7 @@ export function WhatsAppConfig() {
         uazapiPollErrorCountRef.current += 1;
         if (uazapiPollErrorCountRef.current >= 5) {
           stopUazapiPolling();
-          setUazapiError(
-            'Não foi possível confirmar o status após várias tentativas. Tente atualizar manualmente.',
-          );
+          setUazapiError(t('uazapiErrors.statusPollFailed'));
         }
         return;
       }
@@ -551,7 +536,7 @@ export function WhatsAppConfig() {
         stopUazapiPolling();
       }
     }, 3500);
-  }, [refreshUazapiStatus, stopUazapiPolling]);
+  }, [refreshUazapiStatus, stopUazapiPolling, t]);
 
   // Stop condition: provider switched away from 'uazapi' while this
   // component stays mounted (e.g. another admin changed it).
@@ -583,7 +568,7 @@ export function WhatsAppConfig() {
       const res = await fetch('/api/uazapi/connect', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) {
-        const { message, instanceInvalid } = describeUazapiFetchError(res.status, data);
+        const { message, instanceInvalid } = describeUazapiFetchError(res.status, data, t);
         setUazapiInstanceInvalid(instanceInvalid);
         setUazapiError(instanceInvalid ? null : message);
         return;
@@ -596,7 +581,7 @@ export function WhatsAppConfig() {
         startUazapiPolling();
       } else if (data.status === 'connected') {
         stopUazapiPolling();
-        toast.success('WhatsApp já está conectado.');
+        toast.success(t('toasts.uazapiAlreadyConnected'));
         // Mirrors the same fire-and-forget reflection as
         // refreshUazapiStatus — the connect route itself best-effort
         // auto-registers the webhook when it resolves straight to
@@ -605,7 +590,7 @@ export function WhatsAppConfig() {
       }
     } catch (err) {
       console.error('uazapi connect failed:', err);
-      setUazapiError('Erro de rede ao gerar o QR Code.');
+      setUazapiError(t('uazapiErrors.qrGenerationFailed'));
     } finally {
       setUazapiConnecting(false);
     }
@@ -636,15 +621,15 @@ export function WhatsAppConfig() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setUazapiError(data?.error || 'Não foi possível configurar o webhook.');
+        setUazapiError(data?.error || t('uazapiErrors.webhookConfigFailed'));
         setUazapiWebhookState('error');
         return;
       }
-      toast.success('Webhook configurado com sucesso.');
+      toast.success(t('toasts.webhookConfigured'));
       await refreshUazapiWebhookStatus();
     } catch (err) {
       console.error('uazapi webhook register failed:', err);
-      setUazapiError('Erro de rede ao configurar o webhook.');
+      setUazapiError(t('uazapiErrors.webhookNetworkFailed'));
       setUazapiWebhookState('error');
     } finally {
       setRegisteringUazapiWebhook(false);
@@ -660,12 +645,7 @@ export function WhatsAppConfig() {
     // Só pede confirmação extra quando já existe uma configuração Meta
     // ativa — criar do zero (nenhuma configuração) não precisa disso.
     if (config?.provider === 'meta') {
-      const confirmed = confirm(
-        'Esta conta está usando a Meta Cloud API. Ao criar a instância UAZAPI, ' +
-          'a UAZAPI passará a ser o provedor ativo para novos envios. As ' +
-          'credenciais Meta serão preservadas, mas somente um provedor opera ' +
-          'por vez. Deseja continuar?',
-      );
+      const confirmed = confirm(t('confirms.switchToUazapi'));
       if (!confirmed) return;
     }
 
@@ -675,20 +655,18 @@ export function WhatsAppConfig() {
       const res = await fetch('/api/uazapi/instance', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) {
-        const { message } = describeUazapiFetchError(res.status, data);
+        const { message } = describeUazapiFetchError(res.status, data, t);
         setUazapiError(message);
         return;
       }
       toast.success(
-        'UAZAPI é agora o provedor ativo desta conta. As credenciais Meta ' +
-          'continuam salvas como alternativa — não há troca automática entre ' +
-          'provedores; para voltar ao Meta, desconecte o UAZAPI explicitamente.',
+        t('toasts.uazapiActiveProvider'),
         { duration: 12000 },
       );
       if (accountId) await fetchConfig(accountId);
     } catch (err) {
       console.error('uazapi instance creation failed:', err);
-      setUazapiError('Erro de rede ao criar a instância.');
+      setUazapiError(t('uazapiErrors.instanceCreateNetworkFailed'));
     } finally {
       setCreatingUazapiInstance(false);
     }
@@ -702,11 +680,7 @@ export function WhatsAppConfig() {
   // nunca ter duas instâncias vivas ao mesmo tempo.
   async function handleRecreateUazapiInstance() {
     if (recreatingUazapiInstance) return;
-    if (
-      !confirm(
-        'Isso vai remover a configuração UAZAPI local (inválida) e criar uma instância nova. Contatos, conversas, mensagens, usuários, a conta e eventuais dados Meta preservados NÃO são afetados. Continuar?',
-      )
-    ) {
+    if (!confirm(t('confirms.recreateInstance'))) {
       return;
     }
     setRecreatingUazapiInstance(true);
@@ -715,25 +689,25 @@ export function WhatsAppConfig() {
       const delRes = await fetch('/api/uazapi/instance', { method: 'DELETE' });
       const delData = await delRes.json();
       if (!delRes.ok) {
-        const { message } = describeUazapiFetchError(delRes.status, delData);
+        const { message } = describeUazapiFetchError(delRes.status, delData, t);
         setUazapiError(message);
         return;
       }
       const createRes = await fetch('/api/uazapi/instance', { method: 'POST' });
       const createData = await createRes.json();
       if (!createRes.ok) {
-        const { message } = describeUazapiFetchError(createRes.status, createData);
+        const { message } = describeUazapiFetchError(createRes.status, createData, t);
         setUazapiError(message);
         return;
       }
       setUazapiInstanceInvalid(false);
       setUazapiStatus(null);
       setUazapiWebhookState('unknown');
-      toast.success('Instância UAZAPI recriada.');
+      toast.success(t('toasts.instanceRecreated'));
       if (accountId) await fetchConfig(accountId);
     } catch (err) {
       console.error('uazapi instance recreation failed:', err);
-      setUazapiError('Erro de rede ao recriar a instância.');
+      setUazapiError(t('uazapiErrors.instanceRecreateNetworkFailed'));
     } finally {
       setRecreatingUazapiInstance(false);
     }
@@ -766,7 +740,7 @@ export function WhatsAppConfig() {
 
   function handleCopyWebhookUrl() {
     navigator.clipboard.writeText(webhookUrl);
-    toast.success('Webhook URL copied to clipboard');
+    toast.success(t('toasts.webhookUrlCopied'));
   }
 
   if (loading) {
@@ -803,7 +777,7 @@ export function WhatsAppConfig() {
               <AlertTriangle className="size-5 text-amber-400 mt-0.5 shrink-0" />
               <div className="flex-1">
                 <AlertTitle className="text-amber-200 mb-1">
-                  Stored token can&apos;t be decrypted
+                  {t('tokenCorrupted')}
                 </AlertTitle>
                 <AlertDescription className="text-amber-100/80 text-sm">
                   {statusMessage}
@@ -966,7 +940,7 @@ export function WhatsAppConfig() {
             <div className="space-y-2">
               <Label className="text-muted-foreground">{t('phoneNumberId')}</Label>
               <Input
-                placeholder="e.g. 100234567890123"
+                placeholder={t('phoneNumberIdPlaceholder')}
                 value={phoneNumberId}
                 onChange={(e) => setPhoneNumberId(e.target.value)}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
@@ -976,7 +950,7 @@ export function WhatsAppConfig() {
             <div className="space-y-2">
               <Label className="text-muted-foreground">{t('wabaId')}</Label>
               <Input
-                placeholder="e.g. 100234567890456"
+                placeholder={t('wabaIdPlaceholder')}
                 value={wabaId}
                 onChange={(e) => setWabaId(e.target.value)}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
@@ -1091,11 +1065,10 @@ export function WhatsAppConfig() {
           config?.provider === 'uazapi' && hasDormantMetaCreds && (
             <Alert className="bg-card border-border">
               <AlertTitle className="text-foreground">
-                Integração Meta preservada
+                {t('metaPreservedTitle')}
               </AlertTitle>
               <AlertDescription className="text-muted-foreground text-sm">
-                As credenciais Meta existentes continuam salvas, mas não
-                estão em uso enquanto a UAZAPI estiver ativa.
+                {t('metaPreservedDesc')}
               </AlertDescription>
             </Alert>
           )
@@ -1114,18 +1087,18 @@ export function WhatsAppConfig() {
         <Card>
           <CardHeader>
             <CardTitle className="text-foreground">
-              {hasNoConfig && !showMetaFallback ? 'Conexão com WhatsApp' : 'UAZAPI (WhatsApp via QR Code)'}
+              {hasNoConfig && !showMetaFallback ? t('uazapiCardTitleBlank') : t('uazapiCardTitle')}
             </CardTitle>
             {!(hasNoConfig && !showMetaFallback) && (
               <CardDescription className="text-muted-foreground">
-                Conexão alternativa ao Meta Cloud API — um número oficial da empresa, conectado por QR Code.
+                {t('uazapiCardDesc')}
               </CardDescription>
             )}
           </CardHeader>
           <CardContent className="space-y-4">
             {uazapiError && (
               <Alert className="bg-red-950/30 border-red-700/50">
-                <AlertTitle className="text-red-200">Erro</AlertTitle>
+                <AlertTitle className="text-red-200">{t('genericErrorTitle')}</AlertTitle>
                 <AlertDescription className="text-red-100/80 text-sm">
                   {uazapiError}
                 </AlertDescription>
@@ -1136,9 +1109,9 @@ export function WhatsAppConfig() {
                 UAZAPI-first, o mesmo para toda empresa nova. */}
             {hasNoConfig && !showMetaFallback && (
               <div className="space-y-3">
-                <p className="text-sm text-foreground">Nenhum WhatsApp conectado.</p>
+                <p className="text-sm text-foreground">{t('uazapiNoneConnectedTitle')}</p>
                 <p className="text-sm text-muted-foreground">
-                  Conecte um número via UAZAPI usando QR Code.
+                  {t('uazapiConnectHint')}
                 </p>
                 {showCreateUazapiInstanceButton ? (
                   <Button
@@ -1149,18 +1122,18 @@ export function WhatsAppConfig() {
                     {creatingUazapiInstance ? (
                       <>
                         <Loader2 className="size-4 animate-spin" />
-                        Conectando…
+                        {t('uazapiConnecting')}
                       </>
                     ) : (
                       <>
                         <QrCode className="size-4" />
-                        Conectar WhatsApp via QR Code
+                        {t('uazapiConnectButton')}
                       </>
                     )}
                   </Button>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    Somente administradores podem conectar o WhatsApp desta empresa.
+                    {t('uazapiAdminOnlyConnect')}
                   </p>
                 )}
                 {showCreateUazapiInstanceButton && (
@@ -1169,7 +1142,7 @@ export function WhatsAppConfig() {
                     onClick={() => setShowMetaFallback(true)}
                     className="block text-xs text-muted-foreground underline decoration-dotted hover:text-foreground"
                   >
-                    Prefiro configurar a Meta Cloud API
+                    {t('preferMetaLink')}
                   </button>
                 )}
               </div>
@@ -1181,7 +1154,7 @@ export function WhatsAppConfig() {
             {((hasNoConfig && showMetaFallback) || config?.provider === 'meta') && (
               <div className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  Nenhuma instância UAZAPI configurada para esta conta.
+                  {t('uazapiNoInstanceConfigured')}
                 </p>
                 {showCreateUazapiInstanceButton ? (
                   <Button
@@ -1192,15 +1165,15 @@ export function WhatsAppConfig() {
                     {creatingUazapiInstance ? (
                       <>
                         <Loader2 className="size-4 animate-spin" />
-                        Criando…
+                        {t('uazapiCreating')}
                       </>
                     ) : (
-                      'Criar instância UAZAPI'
+                      t('uazapiCreateInstanceButton')
                     )}
                   </Button>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    Somente administradores podem criar a instância UAZAPI.
+                    {t('uazapiAdminOnlyCreate')}
                   </p>
                 )}
                 {hasNoConfig && (
@@ -1209,7 +1182,7 @@ export function WhatsAppConfig() {
                     onClick={() => setShowMetaFallback(false)}
                     className="block text-xs text-muted-foreground underline decoration-dotted hover:text-foreground"
                   >
-                    ← Usar UAZAPI (recomendado)
+                    {t('preferUazapiLink')}
                   </button>
                 )}
               </div>
@@ -1219,11 +1192,9 @@ export function WhatsAppConfig() {
             {config?.provider === 'uazapi' && uazapiInstanceInvalid && (
               <div className="space-y-3">
                 <Alert className="bg-amber-950/30 border-amber-700/50">
-                  <AlertTitle className="text-amber-200">Instância UAZAPI não encontrada</AlertTitle>
+                  <AlertTitle className="text-amber-200">{t('uazapiInstanceNotFoundTitle')}</AlertTitle>
                   <AlertDescription className="text-amber-100/80 text-sm">
-                    A configuração local existe, mas o servidor UAZAPI não reconhece mais essa
-                    instância (pode ter sido removida manualmente). Contatos, conversas, mensagens e
-                    a conta não são afetados por essa situação.
+                    {t('uazapiInstanceNotFoundDesc')}
                   </AlertDescription>
                 </Alert>
                 {canEditSettings ? (
@@ -1236,15 +1207,15 @@ export function WhatsAppConfig() {
                     {recreatingUazapiInstance ? (
                       <>
                         <Loader2 className="size-4 animate-spin" />
-                        Recriando…
+                        {t('uazapiRecreating')}
                       </>
                     ) : (
-                      'Recriar instância UAZAPI'
+                      t('uazapiRecreateInstanceButton')
                     )}
                   </Button>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    Somente administradores podem recriar a instância UAZAPI.
+                    {t('uazapiAdminOnlyRecreate')}
                   </p>
                 )}
               </div>
@@ -1262,12 +1233,14 @@ export function WhatsAppConfig() {
                     <XCircle className="size-4 text-muted-foreground" />
                   )}
                   <span className="text-sm text-foreground">
-                    Status: {uazapiStatus ? UAZAPI_STATUS_LABEL_PT[uazapiStatus] : 'Desconhecido'}
+                    {t('statusPrefix', {
+                      status: uazapiStatus ? t(`uazapiStatus.${uazapiStatus}`) : t('uazapiStatus.unknown'),
+                    })}
                   </span>
                 </div>
                 {config.uazapi_instance_name && (
                   <p className="text-xs text-muted-foreground">
-                    Instância: <span className="text-foreground">{config.uazapi_instance_name}</span>
+                    {t('instanceLabel')} <span className="text-foreground">{config.uazapi_instance_name}</span>
                   </p>
                 )}
 
@@ -1286,7 +1259,7 @@ export function WhatsAppConfig() {
                       <XCircle className="size-4 text-muted-foreground" />
                     )}
                     <span className="text-sm text-foreground">
-                      Webhook: {UAZAPI_WEBHOOK_STATE_LABEL_PT[uazapiWebhookState]}
+                      {t('webhookLabel', { state: t(`uazapiWebhookState.${uazapiWebhookState}`) })}
                     </span>
                     {canEditSettings && uazapiWebhookState !== 'active' && uazapiWebhookState !== 'checking' && (
                       <Button
@@ -1299,12 +1272,12 @@ export function WhatsAppConfig() {
                         {registeringUazapiWebhook ? (
                           <>
                             <Loader2 className="size-4 animate-spin" />
-                            Configurando…
+                            {t('webhookConfiguring')}
                           </>
                         ) : uazapiWebhookState === 'not_configured' ? (
-                          'Configurar webhook'
+                          t('webhookConfigureButton')
                         ) : (
-                          'Reativar webhook'
+                          t('webhookReactivateButton')
                         )}
                       </Button>
                     )}
@@ -1313,9 +1286,9 @@ export function WhatsAppConfig() {
 
                 {uazapiStatus === 'connected' ? (
                   <Alert className="bg-emerald-950/30 border-emerald-700/50">
-                    <AlertTitle className="text-emerald-200">WhatsApp conectado</AlertTitle>
+                    <AlertTitle className="text-emerald-200">{t('uazapiConnectedTitle')}</AlertTitle>
                     <AlertDescription className="text-emerald-100/80 text-sm">
-                      Esta instância UAZAPI está conectada e pronta para uso.
+                      {t('uazapiConnectedDesc')}
                     </AlertDescription>
                   </Alert>
                 ) : (
@@ -1325,18 +1298,18 @@ export function WhatsAppConfig() {
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={uazapiQrCode}
-                          alt="QR Code de conexão do WhatsApp"
+                          alt={t('qrCodeAlt')}
                           className="size-56"
                         />
                         <p className="text-xs text-muted-foreground text-center">
-                          Abra o WhatsApp no celular do número oficial → Aparelhos conectados → Conectar um aparelho.
+                          {t('qrCodeInstructions')}
                         </p>
                       </div>
                     )}
 
                     {uazapiPairCode && (
                       <p className="text-sm text-foreground">
-                        Código de pareamento:{' '}
+                        {t('pairCodeLabel')}{' '}
                         <span className="font-mono tracking-widest">{uazapiPairCode}</span>
                       </p>
                     )}
@@ -1353,16 +1326,16 @@ export function WhatsAppConfig() {
                       {uazapiConnecting ? (
                         <>
                           <Loader2 className="size-4 animate-spin" />
-                          Gerando…
+                          {t('generatingQr')}
                         </>
                       ) : (
-                        'Gerar QR Code'
+                        t('generateQrButton')
                       )}
                     </Button>
                   )}
                   {!canEditSettings && uazapiStatus !== 'connected' && (
                     <p className="text-xs text-muted-foreground">
-                      Somente administradores podem gerar um novo QR Code.
+                      {t('adminOnlyGenerateQr')}
                     </p>
                   )}
                   <Button
@@ -1374,10 +1347,10 @@ export function WhatsAppConfig() {
                     {uazapiRefreshingStatus ? (
                       <>
                         <Loader2 className="size-4 animate-spin" />
-                        Atualizando…
+                        {t('refreshingStatus')}
                       </>
                     ) : (
-                      'Atualizar status'
+                      t('refreshStatusButton')
                     )}
                   </Button>
                 </div>

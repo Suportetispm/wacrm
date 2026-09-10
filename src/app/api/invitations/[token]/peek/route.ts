@@ -41,12 +41,29 @@ import { createClient } from "@/lib/supabase/server";
  * `localhost` during development) so rate-limit keys still
  * exist — the limit then effectively applies "globally," which
  * is fine for dev.
+ *
+ * Hardened against malformed headers: `x-forwarded-for` can legally
+ * contain empty entries from a mangling proxy (e.g. a leading comma,
+ * ",1.2.3.4") — naively taking `[0]` before trimming would return
+ * `""`, which upstream turns into a shared rate-limit bucket key like
+ * `peek:` for every client that triggers it. Every candidate is
+ * trimmed and empty ones are skipped; only a genuinely non-empty
+ * value is ever returned, else "unknown".
  */
-function getClientIp(request: Request): string {
+export function getClientIp(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0].trim();
+  if (xff) {
+    const firstNonEmpty = xff
+      .split(",")
+      .map((part) => part.trim())
+      .find((part) => part.length > 0);
+    if (firstNonEmpty) return firstNonEmpty;
+  }
   const xri = request.headers.get("x-real-ip");
-  if (xri) return xri.trim();
+  if (xri) {
+    const trimmed = xri.trim();
+    if (trimmed) return trimmed;
+  }
   return "unknown";
 }
 
@@ -57,7 +74,7 @@ export async function GET(
   // Rate-limit by IP first. Returns 429 to a serial bruteforcer
   // before we ever touch the DB.
   const ip = getClientIp(request);
-  const limit = checkRateLimit(`peek:${ip}`, RATE_LIMITS.invitationPeek);
+  const limit = await checkRateLimit(`peek:${ip}`, RATE_LIMITS.invitationPeek);
   if (!limit.success) return rateLimitResponse(limit);
 
   const { token } = await params;

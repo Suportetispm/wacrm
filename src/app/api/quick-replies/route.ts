@@ -4,6 +4,16 @@ import { requirePermission } from '@/lib/auth/permission-guard'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 
+const GENERIC_ERROR = 'Failed to process the request'
+
+function sqlCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code) return code
+  }
+  return 'unknown_error'
+}
+
 // Quick replies — reusable snippets (plain text or a saved interactive
 // message) shared across the account. GET lists; POST creates. Mirrors
 // the automations route: RLS-scoped read via the user client, service-
@@ -17,7 +27,10 @@ export async function GET() {
       .from('quick_replies')
       .select('*')
       .order('created_at', { ascending: false })
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (error) {
+      console.error('[quick-replies] GET failed:', sqlCode(error))
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
+    }
     return NextResponse.json({ quick_replies: data ?? [] })
   } catch (err) {
     return toErrorResponse(err)
@@ -75,7 +88,8 @@ export async function POST(request: Request) {
     .single()
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[quick-replies] POST insert failed:', sqlCode(error))
+    return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 })
   }
   return NextResponse.json({ quick_reply: data }, { status: 201 })
 }

@@ -92,7 +92,7 @@ export async function POST(request: Request) {
     return toPlatformErrorResponse(err)
   }
 
-  const limit = checkRateLimit(
+  const limit = await checkRateLimit(
     `platform:accountCreate:${ctx.userId}`,
     RATE_LIMITS.platformAdminAction,
   )
