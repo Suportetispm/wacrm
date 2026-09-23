@@ -10,6 +10,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
 import { DEFAULT_CURRENCY } from "@/lib/currency";
@@ -134,6 +135,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  * component, avoiding internal lock contention in the Supabase client.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [account, setAccount] = useState<AccountSummary | null>(null);
@@ -365,8 +367,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setProfile(null);
     setAccount(null);
-    window.location.href = "/login";
-  }, []);
+    // App Router navigation only — NOT window.location.href. A hard
+    // navigation here used to race the soft router.push("/login") that
+    // DashboardShellInner's own effect already fires reactively as soon
+    // as `user` flips to null (via the onAuthStateChange listener
+    // above). Both targeted the exact same URL at nearly the same
+    // instant: the client-side RSC fetch Next.js issues for the soft
+    // navigation and the browser's top-level document request for the
+    // hard one collided, and the RSC flight payload (plain text meant
+    // for the router's fetch, never for a document load) ended up
+    // rendered as the page itself. Using only the router here means
+    // there's a single navigation subsystem in play — replace() (not
+    // push()) drops the dashboard entry from history so the back
+    // button can't return to it, and refresh() invalidates the Router
+    // Cache so the freshly-cleared (signed-out) cookies are what any
+    // re-rendered server data reflects.
+    router.replace("/login");
+    router.refresh();
+  }, [router]);
 
   const refreshProfile = useCallback(async () => {
     if (!user?.id) return;
