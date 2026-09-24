@@ -121,10 +121,17 @@ export function SettingsOverview({
     (async () => {
       setWhatsappLoading(true);
       const [row, health] = await Promise.allSettled([
+        // ETAPA 077A: phone_number_id is Meta-only, so this is scoped
+        // to provider='meta' + order+limit(1) — deterministic pick,
+        // never throws PGRST116 once the account can have more than
+        // one row.
         supabase
           .from('whatsapp_config')
           .select('phone_number_id')
           .eq('account_id', acctId)
+          .eq('provider', 'meta')
+          .order('created_at', { ascending: true })
+          .limit(1)
           .maybeSingle(),
         fetch('/api/whatsapp/config', { cache: 'no-store' }).then((r) => r.json()),
       ]);

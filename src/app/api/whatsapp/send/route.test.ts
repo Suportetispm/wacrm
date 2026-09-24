@@ -51,14 +51,21 @@ function makeSupabaseMock() {
           // its contact); otherwise fall back to the canned existing row.
           return { data: createdConversation ?? existingConversation, error: null }
         case 'whatsapp_config':
+          // ETAPA 077A: loadActiveWhatsAppConfig/loadPrimaryWhatsAppConfigRow
+          // never call `.single()`/`.maybeSingle()` on this table anymore —
+          // they await the `.select().eq().order()` chain directly and
+          // expect an array of rows, picking the deterministic primary one
+          // themselves. Wrapped in an array here to match.
           return {
-            data: {
-              id: 'cfg-1',
-              account_id: 'acct-1',
-              provider: 'meta',
-              phone_number_id: 'PNID-1',
-              access_token: 'enc-token',
-            },
+            data: [
+              {
+                id: 'cfg-1',
+                account_id: 'acct-1',
+                provider: 'meta',
+                phone_number_id: 'PNID-1',
+                access_token: 'enc-token',
+              },
+            ],
             error: null,
           }
         case 'message_templates':

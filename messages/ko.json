@@ -2046,7 +2046,11 @@
         "webhookConfigFailed": "웹훅을 구성할 수 없습니다.",
         "webhookNetworkFailed": "웹훅을 구성하는 중 네트워크 오류가 발생했습니다.",
         "instanceCreateNetworkFailed": "인스턴스를 생성하는 중 네트워크 오류가 발생했습니다.",
-        "instanceRecreateNetworkFailed": "인스턴스를 재생성하는 중 네트워크 오류가 발생했습니다."
+        "instanceRecreateNetworkFailed": "인스턴스를 재생성하는 중 네트워크 오류가 발생했습니다.",
+        "multiConnectionDisabled": "이 계정에서는 여러 WhatsApp 연결이 활성화되어 있지 않습니다.",
+        "addConnectionNotEnabled": "이 계정에는 이미 WhatsApp 연결이 있습니다. 이 계정에서는 아직 연결을 추가할 수 없습니다.",
+        "instanceStillValid": "현재 UAZAPI 인스턴스는 아직 유효하므로 다시 만들 필요가 없습니다. 상태를 새로 고치고 다시 연결하세요.",
+        "connectionHasHistory": "이 연결에는 대화 기록이 있어 삭제할 수 없습니다. 자격 증명을 교체하려면 다시 입력한 후 저장하세요."
       },
       "toasts": {
         "loadConfigFailed": "WhatsApp 설정을 불러오지 못했습니다",
@@ -2071,12 +2075,12 @@
         "uazapiAlreadyConnected": "WhatsApp이 이미 연결되어 있습니다.",
         "webhookConfigured": "웹훅이 성공적으로 구성되었습니다.",
         "instanceRecreated": "UAZAPI 인스턴스가 재생성되었습니다.",
-        "uazapiActiveProvider": "이제 UAZAPI가 이 계정의 활성 공급자입니다. Meta 자격 증명은 대체 수단으로 계속 저장됩니다 — 공급자 간 자동 전환은 없습니다. Meta로 돌아가려면 UAZAPI 연결을 명시적으로 해제하세요."
+        "uazapiActiveProvider": "UAZAPI 인스턴스가 생성되었습니다. 연결되면(아래 QR 코드를 스캔하세요) 발송을 처리하기 시작합니다 — 기존 Meta 연결이 있다면 영향을 받지 않습니다."
       },
       "confirms": {
         "resetConfig": "현재 WhatsApp 설정이 삭제되어 다시 입력할 수 있게 됩니다. 계속하시겠습니까?",
-        "switchToUazapi": "이 계정은 현재 Meta Cloud API를 사용 중입니다. UAZAPI 인스턴스를 생성하면 UAZAPI가 새 발송의 활성 공급자가 됩니다. Meta 자격 증명은 보존되지만 한 번에 하나의 공급자만 활성화됩니다. 계속하시겠습니까?",
-        "recreateInstance": "로컬(유효하지 않은) UAZAPI 설정이 제거되고 새 인스턴스가 생성됩니다. 연락처, 대화, 메시지, 사용자, 계정 및 보존된 Meta 데이터는 영향을 받지 않습니다. 계속하시겠습니까?"
+        "switchToUazapi": "이 계정은 현재 Meta Cloud API를 사용 중입니다. UAZAPI 인스턴스를 생성하면 Meta와 별도로 추가 연결이 생성됩니다 — 기존 Meta 연결과 자격 증명은 영향을 받거나 대체되지 않습니다. 계속하시겠습니까?",
+        "recreateInstance": "이 연결의 유효하지 않은 UAZAPI 인스턴스를 새 인스턴스로 교체합니다. 연결 자체, 연락처, 대화, 메시지, 사용자, 계정 및 보존된 Meta 데이터는 영향을 받지 않습니다. QR 코드를 다시 스캔해야 합니다. 계속하시겠습니까?"
       },
       "metaPreservedTitle": "Meta 연동 유지됨",
       "metaPreservedDesc": "기존 Meta 자격 증명은 계속 저장되어 있지만, UAZAPI가 활성화된 동안에는 사용되지 않습니다.",

@@ -2046,7 +2046,11 @@
         "webhookConfigFailed": "Could not configure the webhook.",
         "webhookNetworkFailed": "Network error while configuring the webhook.",
         "instanceCreateNetworkFailed": "Network error while creating the instance.",
-        "instanceRecreateNetworkFailed": "Network error while recreating the instance."
+        "instanceRecreateNetworkFailed": "Network error while recreating the instance.",
+        "multiConnectionDisabled": "Multiple WhatsApp connections are not enabled for this account.",
+        "addConnectionNotEnabled": "This account already has a WhatsApp connection. Adding another connection is not enabled for this account yet.",
+        "instanceStillValid": "The current UAZAPI instance is still valid — there is nothing to recreate. Refresh the status and reconnect it instead.",
+        "connectionHasHistory": "This connection has conversation history and cannot be removed. To replace its credentials, enter them again and save."
       },
       "toasts": {
         "loadConfigFailed": "Failed to load WhatsApp configuration",
@@ -2071,12 +2075,12 @@
         "uazapiAlreadyConnected": "WhatsApp is already connected.",
         "webhookConfigured": "Webhook configured successfully.",
         "instanceRecreated": "UAZAPI instance recreated.",
-        "uazapiActiveProvider": "UAZAPI is now this account's active provider. Meta credentials remain saved as a fallback — there's no automatic switch between providers; to go back to Meta, disconnect UAZAPI explicitly."
+        "uazapiActiveProvider": "UAZAPI instance created. It will start handling sends once connected (scan the QR code below) — your existing Meta connection, if any, is not affected."
       },
       "confirms": {
         "resetConfig": "This will delete the current WhatsApp config so you can re-enter it. Continue?",
-        "switchToUazapi": "This account is using the Meta Cloud API. Creating a UAZAPI instance will make UAZAPI the active provider for new sends. Meta credentials will be preserved, but only one provider is active at a time. Continue?",
-        "recreateInstance": "This will remove the local (invalid) UAZAPI configuration and create a new instance. Contacts, conversations, messages, users, the account, and any preserved Meta data are NOT affected. Continue?"
+        "switchToUazapi": "This account is using the Meta Cloud API. Creating a UAZAPI instance adds it as a separate connection alongside Meta — your Meta connection and its credentials are not affected or replaced. Continue?",
+        "recreateInstance": "This will replace this connection’s invalid UAZAPI instance with a new one. The connection itself, contacts, conversations, messages, users, the account, and any preserved Meta data are NOT affected. You will need to scan the QR Code again. Continue?"
       },
       "metaPreservedTitle": "Meta integration preserved",
       "metaPreservedDesc": "Your existing Meta credentials remain saved, but are not in use while UAZAPI is active.",

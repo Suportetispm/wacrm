@@ -218,11 +218,18 @@ function InboxPageInner() {
         return;
       }
 
-      const { data } = await supabase
+      // ETAPA 077A: deterministic primary-row pick (same rule as
+      // loadPrimaryWhatsAppConfigRow — prefer a 'connected' row, else
+      // the oldest) instead of a plain .maybeSingle(), which throws
+      // PGRST116 once the account can have more than one row. Inlined
+      // here rather than importing the shared server helper, since
+      // this runs client-side.
+      const { data: rows } = await supabase
         .from("whatsapp_config")
         .select("status, provider")
         .eq("account_id", accountId)
-        .maybeSingle();
+        .order("created_at", { ascending: true });
+      const data = rows?.find((r) => r.status === "connected") ?? rows?.[0];
 
       setWhatsappConnected(data?.status === "connected");
       setActiveProvider((data?.provider as "meta" | "uazapi" | undefined) ?? null);

@@ -64,11 +64,15 @@ export async function POST() {
 
   // Best-effort local mirror, guarded against a concurrent provider
   // switch — the QR/pairing code is still valid to show even if this
-  // write fails or affects zero rows.
+  // write fails or affects zero rows. ETAPA 077A: scoped to
+  // `config.configId` (the exact row `loadActiveWhatsAppConfig` already
+  // resolved above) instead of `account_id` + `provider='uazapi'` — the
+  // old filter would mirror this result onto EVERY uazapi connection
+  // the account has, once there's more than one.
   const { data: updated, error: updateError } = await supabase
     .from('whatsapp_config')
     .update(update)
-    .eq('account_id', accountId)
+    .eq('id', config.configId)
     .eq('provider', 'uazapi')
     .select('id')
   if (updateError) {

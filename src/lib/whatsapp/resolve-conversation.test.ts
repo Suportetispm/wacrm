@@ -48,7 +48,12 @@ function makeDb(script: Script): SupabaseClient {
     eq: () => builder,
     order: () => builder,
     limit: () => {
-      // Only the conversation lookup terminates on `.limit(1)`.
+      // The conversation lookup terminates on `.limit(1)` directly (it
+      // never chains a `.maybeSingle()`/`.single()` after). The
+      // whatsapp_config existence check (ETAPA 077A) chains
+      // `.order().limit(1).maybeSingle()`, so `.limit()` there must
+      // return the builder, not a resolved value, for `.maybeSingle()`
+      // to still be reachable.
       if (table === 'conversations' && mode === 'select') {
         const row = script.existingConversationByCall
           ? (script.existingConversationByCall[convLookupCalls] ?? null)
@@ -56,7 +61,7 @@ function makeDb(script: Script): SupabaseClient {
         convLookupCalls++;
         return Promise.resolve({ data: row ? [row] : [], error: null });
       }
-      return Promise.resolve({ data: [], error: null });
+      return builder;
     },
     like: () => {
       const data = script.contactCandidatesByCall

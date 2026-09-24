@@ -63,10 +63,14 @@ export async function GET() {
   if (result.status === 'connected') {
     // Only stamp it on the transition INTO connected — check the
     // current value first so repeated polls don't keep bumping it.
+    // ETAPA 077A: scoped to `config.configId` (the exact row
+    // `loadActiveWhatsAppConfig` already resolved above), not
+    // `account_id` — reading by account_id alone would pick an
+    // arbitrary row once the account can have more than one.
     const { data: row } = await supabase
       .from('whatsapp_config')
       .select('status')
-      .eq('account_id', accountId)
+      .eq('id', config.configId)
       .maybeSingle()
     if (row?.status !== 'connected') {
       update.connected_at = new Date().toISOString()
@@ -77,11 +81,17 @@ export async function GET() {
 
   // Best-effort local mirror, guarded against a concurrent provider
   // switch — failure here doesn't affect the response, which reflects
-  // UAZAPI's live state regardless.
+  // UAZAPI's live state regardless. ETAPA 077A: scoped to
+  // `config.configId` instead of `account_id` + `provider='uazapi'`
+  // — the old filter would mirror this ONE poll result onto EVERY
+  // UAZAPI connection the account has, once there's more than one.
+  // `.eq('id', ...)` also makes the "0 rows = provider changed
+  // concurrently" comment below literally true again (today, with
+  // only one row, both filters are equivalent).
   const { data: updated, error: updateError } = await supabase
     .from('whatsapp_config')
     .update(update)
-    .eq('account_id', accountId)
+    .eq('id', config.configId)
     .eq('provider', 'uazapi')
     .select('id')
   if (updateError) {

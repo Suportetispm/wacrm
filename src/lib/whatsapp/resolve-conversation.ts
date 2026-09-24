@@ -54,11 +54,16 @@ export async function resolveConversationByPhone(
   }
 
   // Fail fast (and create nothing) when the account has no WhatsApp
-  // connected — the same error the send would raise anyway.
+  // connected — the same error the send would raise anyway. ETAPA
+  // 077A: order+limit(1) before maybeSingle() — this is a plain
+  // existence check (any provider), so it never needs more than one
+  // row and must not throw PGRST116 once the account can have several.
   const { data: config } = await db
     .from('whatsapp_config')
     .select('id')
     .eq('account_id', accountId)
+    .order('created_at', { ascending: true })
+    .limit(1)
     .maybeSingle();
   if (!config) {
     throw new SendMessageError(

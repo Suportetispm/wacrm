@@ -57,6 +57,9 @@ function describeUazapiFetchError(
       instanceInvalid: true,
     };
   }
+  if (data?.code === 'multi_connection_disabled') {
+    return { message: t('uazapiErrors.multiConnectionDisabled'), instanceInvalid: false };
+  }
   if (status === 401) {
     return { message: t('uazapiErrors.sessionExpired'), instanceInvalid: false };
   }
@@ -99,6 +102,11 @@ export function WhatsAppConfig() {
   const [registeringUazapiWebhook, setRegisteringUazapiWebhook] = useState(false);
   const [creatingUazapiInstance, setCreatingUazapiInstance] = useState(false);
   const [recreatingUazapiInstance, setRecreatingUazapiInstance] = useState(false);
+  // ETAPA 078-0: `multi_connection_enabled` da conta, lido via
+  // GET /api/whatsapp/connection-gate (o browser não lê
+  // account_feature_flags). `null` = ainda não carregado/falhou —
+  // tratado como desligado. Só UX: o backend bloqueia de qualquer jeito.
+  const [multiConnectionEnabled, setMultiConnectionEnabled] = useState<boolean | null>(null);
   const uazapiPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const uazapiPollErrorCountRef = useRef(0);
   const [showToken, setShowToken] = useState(false);
@@ -157,13 +165,19 @@ export function WhatsAppConfig() {
       // Load form values from Supabase (shows what's in DB).
       // Switched from `user_id` (which would only match the row's
       // original author) to `account_id` so every member of the
-      // account sees the same saved configuration. UNIQUE(account_id)
-      // on the table guarantees the .maybeSingle() return type
-      // remains accurate.
+      // account sees the same saved configuration.
+      // ETAPA 077A: order+limit(1) before maybeSingle() — deterministic
+      // primary-row pick (oldest first). UNIQUE(account_id) is what
+      // used to guarantee at most one row; this guard keeps that same
+      // guarantee for the query itself once the account can have more
+      // than one row, without changing this screen's single-connection
+      // UI yet.
       const { data, error } = await supabase
         .from('whatsapp_config')
         .select('*')
         .eq('account_id', acctId)
+        .order('created_at', { ascending: true })
+        .limit(1)
         .maybeSingle();
 
       if (error) {
@@ -242,6 +256,27 @@ export function WhatsAppConfig() {
     fetchConfig(accountId);
   }, [authLoading, profileLoading, user?.id, accountId, fetchConfig]);
 
+  // ETAPA 078-0 — só admins veem ações de criar conexão, e a rota exige
+  // admin; para os demais o valor fica `null` (irrelevante para eles).
+  useEffect(() => {
+    if (!accountId || !canEditSettings) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/whatsapp/connection-gate', { method: 'GET' });
+        const data = await res.json();
+        if (!cancelled && res.ok) {
+          setMultiConnectionEnabled(data.multi_connection_enabled === true);
+        }
+      } catch (err) {
+        console.error('connection-gate fetch failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, canEditSettings]);
+
   async function handleSave() {
     if (config?.provider === 'uazapi') {
       // Meta-only form; nothing to validate/save while UAZAPI is the
@@ -296,7 +331,11 @@ export function WhatsAppConfig() {
       const data = await res.json();
 
       if (!res.ok) {
-        toast.error(data.error || t('toasts.saveFailed'));
+        toast.error(
+          data.code === 'multi_connection_disabled'
+            ? t('uazapiErrors.multiConnectionDisabled')
+            : data.error || t('toasts.saveFailed'),
+        );
         setSaving(false);
         return;
       }
@@ -410,7 +449,11 @@ export function WhatsAppConfig() {
       const data = await res.json();
 
       if (!res.ok) {
-        toast.error(data.error || t('toasts.resetFailedGeneric'));
+        toast.error(
+          data.code === 'connection_has_history'
+            ? t('uazapiErrors.connectionHasHistory')
+            : data.error || t('toasts.resetFailedGeneric'),
+        );
         return;
       }
 
@@ -637,10 +680,18 @@ export function WhatsAppConfig() {
   }
 
   // Estado (a): nenhuma configuração UAZAPI ainda para esta conta.
-  // Só cria — nunca apaga nada; se já houver credenciais Meta na
-  // mesma linha, a rota já preserva ambas (dormant), sem tocar nelas.
+  // ETAPA 077B: POST cria uma linha UAZAPI nova e independente — nunca
+  // apaga nem edita a linha Meta existente (se houver). `fetchConfig`
+  // logo abaixo continua mostrando só a "conexão primária" resolvida
+  // por `loadPrimaryWhatsAppConfigRow` (prefere `connected`, senão a
+  // mais antiga) — uma tela por-conexão fica para uma etapa futura.
   async function handleCreateUazapiInstance() {
     if (creatingUazapiInstance) return;
+
+    if (config && multiConnectionEnabled !== true) {
+      setUazapiError(t('uazapiErrors.multiConnectionDisabled'));
+      return;
+    }
 
     // Só pede confirmação extra quando já existe uma configuração Meta
     // ativa — criar do zero (nenhuma configuração) não precisa disso.
@@ -674,29 +725,31 @@ export function WhatsAppConfig() {
 
   // Estado (c): a linha local diz 'uazapi' mas a UAZAPI não reconhece
   // mais essa instância (deletada manualmente no painel, por ex.).
-  // DELETE só mexe na linha whatsapp_config desta conta — nunca em
-  // contacts/conversations/messages/profiles/accounts — e só então o
-  // POST cria uma instância nova. Sequencial, nunca em paralelo, para
-  // nunca ter duas instâncias vivas ao mesmo tempo.
+  // ETAPA 078A-PREP: RECRIAR é in-place — a rota troca só a instância
+  // externa por trás DESTA linha (mesmo whatsapp_config.id), sem
+  // DELETE e sem linha nova. Não é "nova conexão", então não passa pelo
+  // gate de multiconexão, e credenciais Meta dormentes ficam intactas.
   async function handleRecreateUazapiInstance() {
-    if (recreatingUazapiInstance) return;
+    if (recreatingUazapiInstance || !config?.id) return;
     if (!confirm(t('confirms.recreateInstance'))) {
       return;
     }
     setRecreatingUazapiInstance(true);
     setUazapiError(null);
     try {
-      const delRes = await fetch('/api/uazapi/instance', { method: 'DELETE' });
-      const delData = await delRes.json();
-      if (!delRes.ok) {
-        const { message } = describeUazapiFetchError(delRes.status, delData, t);
-        setUazapiError(message);
-        return;
-      }
-      const createRes = await fetch('/api/uazapi/instance', { method: 'POST' });
-      const createData = await createRes.json();
-      if (!createRes.ok) {
-        const { message } = describeUazapiFetchError(createRes.status, createData, t);
+      const res = await fetch('/api/uazapi/instance/recreate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config_id: config.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data?.code === 'instance_still_valid') {
+          setUazapiInstanceInvalid(false);
+          setUazapiError(t('uazapiErrors.instanceStillValid'));
+          return;
+        }
+        const { message } = describeUazapiFetchError(res.status, data, t);
         setUazapiError(message);
         return;
       }
@@ -1156,7 +1209,11 @@ export function WhatsAppConfig() {
                 <p className="text-sm text-muted-foreground">
                   {t('uazapiNoInstanceConfigured')}
                 </p>
-                {showCreateUazapiInstanceButton ? (
+                {showCreateUazapiInstanceButton && !hasNoConfig && multiConnectionEnabled !== true ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t('uazapiErrors.addConnectionNotEnabled')}
+                  </p>
+                ) : showCreateUazapiInstanceButton ? (
                   <Button
                     onClick={handleCreateUazapiInstance}
                     disabled={creatingUazapiInstance}

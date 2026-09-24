@@ -74,10 +74,15 @@ export async function resolveAuditUserId(
   db: SupabaseClient,
   accountId: string
 ): Promise<string> {
+  // ETAPA 077A: order+limit(1) before maybeSingle() — deterministic
+  // primary-row pick (oldest first), so this never throws PGRST116 once
+  // the account can have more than one whatsapp_config row.
   const { data: config } = await db
     .from('whatsapp_config')
     .select('user_id')
     .eq('account_id', accountId)
+    .order('created_at', { ascending: true })
+    .limit(1)
     .maybeSingle();
   const configOwner = config?.user_id as string | undefined;
   if (configOwner) return configOwner;

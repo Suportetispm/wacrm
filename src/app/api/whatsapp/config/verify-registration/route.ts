@@ -55,10 +55,19 @@ export async function GET() {
     })
   }
 
+  // ETAPA 077A: filtra provider='meta' (este diagnóstico só sabe
+  // checar credenciais Meta) + order+limit(1) para nunca quebrar com
+  // PGRST116 assim que a conta puder ter mais de uma conexão — ver
+  // WACRM_AUDITORIA_WHATSAPP_CONFIG_MULTICONNECTION.md. Comentário
+  // "one-row-per-account" acima ficará desatualizado quando a UNIQUE
+  // cair; a checagem em si já não depende mais disso.
   const { data: config } = await supabase
     .from('whatsapp_config')
     .select('*')
     .eq('account_id', accountId)
+    .eq('provider', 'meta')
+    .order('created_at', { ascending: true })
+    .limit(1)
     .maybeSingle()
 
   if (!config) {

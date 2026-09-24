@@ -120,10 +120,16 @@ export async function POST(request: Request) {
       )
     }
 
+    // ETAPA 077A: filtra provider='meta' (broadcast via template é
+    // Meta-only) + order+limit(1) para nunca quebrar com PGRST116
+    // assim que a conta puder ter mais de uma conexão.
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
       .select('*')
       .eq('account_id', accountId)
+      .eq('provider', 'meta')
+      .order('created_at', { ascending: true })
+      .limit(1)
       .single()
 
     if (configError || !config) {

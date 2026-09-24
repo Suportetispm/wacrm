@@ -1,13 +1,28 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
-import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import {
+  AccountDisabledError,
+  ForbiddenError,
+  requireRole,
+  toErrorResponse,
+  UnauthorizedError,
+} from '@/lib/auth/account'
 import {
   registerPhoneNumber,
   subscribeWabaToApp,
   verifyPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
+import { loadPrimaryWhatsAppConfigRow } from '@/lib/whatsapp/active-config'
+import {
+  checkNewConnectionAllowed,
+  MULTI_CONNECTION_DISABLED_CODE,
+  MULTI_CONNECTION_DISABLED_MESSAGE,
+} from '@/lib/whatsapp/connection-gate'
+
+const CONNECTION_HAS_HISTORY_MESSAGE =
+  'This WhatsApp connection has conversation history and cannot be removed. To replace its credentials, enter them again and save.'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -86,10 +101,22 @@ export async function GET() {
       )
     }
 
+    // ETAPA 077A: filtra provider='meta' explicitamente — esta rota só
+    // sabe testar credenciais Meta (verifyPhoneNumber abaixo), então
+    // nunca deveria resolver uma linha UAZAPI mesmo quando a conta
+    // tiver mais de uma conexão. order+limit(1) garante no máximo 1
+    // linha antes do maybeSingle(), independente de quantas linhas
+    // existam — nunca mais quebra com PGRST116 (ver
+    // WACRM_AUDITORIA_WHATSAPP_CONFIG_MULTICONNECTION.md). Hoje
+    // (UNIQUE(account_id) ainda ativa) o resultado é idêntico ao
+    // anterior.
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
       .select('phone_number_id, access_token, status')
       .eq('account_id', accountId)
+      .eq('provider', 'meta')
+      .order('created_at', { ascending: true })
+      .limit(1)
       .maybeSingle()
 
     if (configError) {
@@ -166,24 +193,16 @@ export async function GET() {
  */
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient()
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    const accountId = await resolveAccountId(supabase, user.id)
-    if (!accountId) {
-      return NextResponse.json(
-        { error: 'Your profile is not linked to an account.' },
-        { status: 403 },
-      )
-    }
+    // Saving Meta config runs verifyPhoneNumber/registerPhoneNumber/
+    // subscribeWabaToApp directly against Graph API before the
+    // `whatsapp_config_insert`/`whatsapp_config_update` RLS policies
+    // (both require 'admin') ever run on the persistence step below.
+    // Without this upfront check, any authenticated member could use
+    // this route as an oracle to test an arbitrary access_token against
+    // Meta, or burn a real phone number's registration, with no way to
+    // persist the result locally. Same fix as /templates/submit
+    // (requireRole).
+    const { supabase, userId, accountId } = await requireRole('admin')
 
     const body = await request.json()
     const { phone_number_id, waba_id, access_token, verify_token, pin } = body
@@ -211,6 +230,16 @@ export async function POST(request: Request) {
     // inbound message. See issue #136. Post-multi-user we key on
     // account_id (not user_id) since teammates inside the same account
     // all share one config; the conflict is between accounts.
+    //
+    // ETAPA 077A note: this `.maybeSingle()` stays safe even after
+    // `whatsapp_config_account_id_key` (UNIQUE(account_id)) is
+    // eventually removed — `phone_number_id` has its OWN, separate
+    // UNIQUE constraint (`whatsapp_config_phone_number_id_key`,
+    // migration 013), unrelated to account_id's. A non-null
+    // `phone_number_id` can never match more than one row in the
+    // whole table regardless of how many rows any single account has,
+    // so this query was never actually at risk — confirmed here
+    // rather than "fixed" by mistake.
     const { data: claimed, error: claimedError } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('account_id')
@@ -234,6 +263,43 @@ export async function POST(request: Request) {
         },
         { status: 409 }
       )
+    }
+
+    // Look up any pre-existing Meta row for this account so we know
+    // whether this number is already registered with Meta — if so we
+    // can skip /register when the user didn't provide a PIN this time
+    // around. ETAPA 077A: filters provider='meta' (this route only
+    // ever writes Meta rows) + order+limit(1) so it never breaks once
+    // an account can have more than one connection — see the GET
+    // handler above for the same reasoning.
+    const { data: existing } = await supabase
+      .from('whatsapp_config')
+      .select('id, registered_at, phone_number_id')
+      .eq('account_id', accountId)
+      .eq('provider', 'meta')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    // ETAPA 078-0: sem linha Meta, este save vira um INSERT — uma
+    // conexão nova, possivelmente paralela a uma UAZAPI já existente.
+    // Gate de multiconexão antes de qualquer chamada à Meta (verify/
+    // register/subscribe). Editar a linha Meta existente (branch de
+    // UPDATE abaixo) nunca passa por aqui.
+    if (!existing) {
+      const gate = await checkNewConnectionAllowed(supabaseAdmin(), accountId)
+      if (!gate.allowed) {
+        if (gate.reason === 'lookup_failed') {
+          return NextResponse.json(
+            { error: 'Failed to validate configuration' },
+            { status: 500 }
+          )
+        }
+        return NextResponse.json(
+          { error: MULTI_CONNECTION_DISABLED_MESSAGE, code: MULTI_CONNECTION_DISABLED_CODE },
+          { status: 409 }
+        )
+      }
     }
 
     // Verify credentials with Meta BEFORE saving
@@ -269,15 +335,6 @@ export async function POST(request: Request) {
         { status: 500 }
       )
     }
-
-    // Look up any pre-existing row for this account so we know whether
-    // this number is already registered with Meta — if so we can skip
-    // /register when the user didn't provide a PIN this time around.
-    const { data: existing } = await supabase
-      .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id')
-      .eq('account_id', accountId)
-      .maybeSingle()
 
     const sameNumber =
       existing?.phone_number_id === phone_number_id &&
@@ -368,10 +425,16 @@ export async function POST(request: Request) {
     }
 
     if (existing) {
+      // ETAPA 077A: scoped to the exact row we just resolved (`id`),
+      // not `account_id` — updating by account_id alone would rewrite
+      // every connection the account has (including unrelated UAZAPI
+      // rows) with Meta-shaped data the moment more than one row can
+      // exist. Same observable result today (only one row per
+      // account while the UNIQUE constraint stands).
       const { error: updateError } = await supabase
         .from('whatsapp_config')
         .update(baseRow)
-        .eq('account_id', accountId)
+        .eq('id', existing.id)
 
       if (updateError) {
         console.error('Error updating whatsapp_config:', updateError)
@@ -382,14 +445,25 @@ export async function POST(request: Request) {
       }
     } else {
       // Insert with both columns: `account_id` is the tenancy key
-      // (NOT NULL post-017, UNIQUE so duplicates trip the constraint
-      // up-front), `user_id` is the audit column identifying which
-      // member of the account saved the config.
+      // (NOT NULL post-017), `user_id` is the audit column identifying
+      // which member of the account saved the config.
+      //
+      // ETAPA 077A note (residual risk, not fixed in this pass — the
+      // race-condition fix requested for this etapa was scoped to
+      // src/app/api/uazapi/instance/route.ts, not this file): today
+      // `whatsapp_config_account_id_key` (UNIQUE(account_id)) still
+      // makes a concurrent double-insert here fail loudly (23505) —
+      // this INSERT has no explicit try/catch for that code today, so
+      // a genuine race would surface as an unhandled 500, same as
+      // before this etapa. Once that UNIQUE is removed (migration
+      // 077), this "SELECT existing, else INSERT" pattern stops being
+      // race-safe by accident — needs the same treatment as the
+      // UAZAPI instance route before 077 ships, tracked separately.
       const { error: insertError } = await supabase
         .from('whatsapp_config')
         .insert({
           account_id: accountId,
-          user_id: user.id,
+          user_id: userId,
           ...baseRow,
         })
 
@@ -427,6 +501,13 @@ export async function POST(request: Request) {
       phone_info: phoneInfo,
     })
   } catch (error) {
+    if (
+      error instanceof UnauthorizedError ||
+      error instanceof ForbiddenError ||
+      error instanceof AccountDisabledError
+    ) {
+      return toErrorResponse(error)
+    }
     console.error('Error in WhatsApp config POST:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -486,10 +567,22 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: 'default_queue_id must be a string or null' }, { status: 400 })
   }
 
+  // ETAPA 077A: resolve a conexão primária primeiro e escreve pelo
+  // `id` exato — atualizar por `account_id` sozinho aplicaria o mesmo
+  // default_queue_id a TODAS as conexões da conta assim que houver
+  // mais de uma (Meta e UAZAPI juntas). Sem conceito explícito de
+  // "conexão padrão" ainda, resolve para a mesma linha que
+  // `loadActiveWhatsAppConfig` usaria — mesmo resultado observável de
+  // hoje (uma linha só).
+  const primaryRow = await loadPrimaryWhatsAppConfigRow(ctx.supabase, ctx.accountId, 'id')
+  if (!primaryRow) {
+    return NextResponse.json({ error: 'No WhatsApp configuration saved yet' }, { status: 404 })
+  }
+
   const { data, error } = await ctx.supabase
     .from('whatsapp_config')
     .update({ default_queue_id: defaultQueueId })
-    .eq('account_id', ctx.accountId)
+    .eq('id', primaryRow.id)
     .select('id, default_queue_id')
     .maybeSingle()
 
@@ -532,12 +625,35 @@ export async function DELETE() {
       )
     }
 
+    // ETAPA 077A: resolve a conexão primária e apaga só ela pelo `id`
+    // — deletar por `account_id` sozinho apagaria TODAS as conexões
+    // da conta assim que houver mais de uma. Mesmo resultado
+    // observável de hoje (uma linha só).
+    const primaryRow = await loadPrimaryWhatsAppConfigRow(supabase, accountId, 'id')
+    if (!primaryRow) {
+      return NextResponse.json({ success: true })
+    }
+
     const { error: deleteError } = await supabase
       .from('whatsapp_config')
       .delete()
-      .eq('account_id', accountId)
+      .eq('id', primaryRow.id)
 
     if (deleteError) {
+      // ETAPA 078A-PREP: a partir da 078A, conversations referenciam a
+      // conexão (FK NO ACTION) — uma conexão com histórico não pode
+      // ser apagada. Reset não é necessário para recuperar um token
+      // corrompido: reinserir as credenciais e salvar (POST) atualiza a
+      // MESMA linha in-place.
+      if (deleteError.code === '23503') {
+        return NextResponse.json(
+          {
+            error: CONNECTION_HAS_HISTORY_MESSAGE,
+            code: 'connection_has_history',
+          },
+          { status: 409 }
+        )
+      }
       console.error('Error deleting whatsapp_config:', deleteError)
       return NextResponse.json(
         { error: 'Failed to delete configuration' },
