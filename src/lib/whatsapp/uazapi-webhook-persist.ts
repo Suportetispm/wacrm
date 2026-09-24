@@ -15,6 +15,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import type { ParsedInboundTextMessage } from './uazapi-webhook-parser'
+import { adoptInboundConnectionForExistingConversation } from './inbound-conversation-connection'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = any
@@ -24,6 +25,8 @@ export interface PersistInboundTextMessageArgs {
   accountId: string
   /** Audit FK for inserts that require one — always the whatsapp_config owner, same convention as the Meta path. */
   configOwnerUserId: string
+  /** ETAPA 078B: the whatsapp_config the message arrived on — always the row the route resolved from instanceId + HMAC, never anything from the payload. */
+  whatsappConfigId: string
   parsed: ParsedInboundTextMessage
 }
 
@@ -122,12 +125,19 @@ export async function persistInboundTextMessage({
   db,
   accountId,
   configOwnerUserId,
+  whatsappConfigId,
   parsed,
 }: PersistInboundTextMessageArgs): Promise<PersistInboundOutcome> {
   const contact = await findOrCreateContact(db, accountId, configOwnerUserId, parsed.phone, parsed.name)
   if (!contact) return { outcome: 'error', code: 'contact_failed' }
 
-  const conversation = await findOrCreateConversation(db, accountId, configOwnerUserId, contact.id)
+  const conversation = await findOrCreateConversation(
+    db,
+    accountId,
+    configOwnerUserId,
+    contact.id,
+    whatsappConfigId,
+  )
   if (!conversation) return { outcome: 'error', code: 'conversation_failed' }
 
   // Computed BEFORE the message insert below, same convention as the
@@ -236,6 +246,7 @@ async function findOrCreateConversation(
   accountId: string,
   configOwnerUserId: string,
   contactId: string,
+  whatsappConfigId: string,
 ): Promise<Row | null> {
   const { data: existingRows, error: findError } = await db
     .from('conversations')
@@ -249,11 +260,22 @@ async function findOrCreateConversation(
     console.error('[uazapi/webhook:persist] conversation lookup failed:', classifyDatabaseError(findError))
     return null
   }
-  if (existingRows && existingRows.length > 0) return existingRows[0]
+  if (existingRows && existingRows.length > 0) {
+    return adoptInboundConnectionForExistingConversation(db, {
+      conversation: existingRows[0],
+      accountId,
+      whatsappConfigId,
+    })
+  }
 
   const { data: created, error: createError } = await db
     .from('conversations')
-    .insert({ account_id: accountId, user_id: configOwnerUserId, contact_id: contactId })
+    .insert({
+      account_id: accountId,
+      user_id: configOwnerUserId,
+      contact_id: contactId,
+      whatsapp_config_id: whatsappConfigId,
+    })
     .select()
     .single()
 
@@ -267,7 +289,13 @@ async function findOrCreateConversation(
       .eq('contact_id', contactId)
       .order('created_at', { ascending: true })
       .limit(1)
-    if (raced && raced.length > 0) return raced[0]
+    if (raced && raced.length > 0) {
+      return adoptInboundConnectionForExistingConversation(db, {
+        conversation: raced[0],
+        accountId,
+        whatsappConfigId,
+      })
+    }
   }
   console.error('[uazapi/webhook:persist] conversation insert failed:', classifyDatabaseError(createError))
   return null

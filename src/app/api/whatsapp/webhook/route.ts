@@ -14,6 +14,7 @@ import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
+import { adoptInboundConnectionForExistingConversation } from '@/lib/whatsapp/inbound-conversation-connection'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -319,7 +320,10 @@ export async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // inserts that need it for NOT NULL FK compliance. Always
           // the admin who saved the WhatsApp config.
           config.user_id,
-          decryptedAccessToken
+          decryptedAccessToken,
+          // ETAPA 078B: the connection this message arrived on, resolved
+          // above from metadata.phone_number_id — never from the payload.
+          config.id
         )
       }
     }
@@ -587,7 +591,11 @@ async function processMessage(
   // (contacts, conversations). Always the admin who saved the
   // WhatsApp config; the choice is arbitrary post-017 but stable.
   configOwnerUserId: string,
-  accessToken: string
+  accessToken: string,
+  // ETAPA 078B: whatsapp_config.id resolved from phone_number_id — stamped
+  // on a new conversation, or adopted by a legacy NULL one (see
+  // adoptInboundConnectionForExistingConversation).
+  whatsappConfigId: string
 ) {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
@@ -606,7 +614,8 @@ async function processMessage(
   const convResult = await findOrCreateConversation(
     accountId,
     configOwnerUserId,
-    contactRecord.id
+    contactRecord.id,
+    whatsappConfigId
   )
   if (!convResult) return
   const conversation = convResult.conversation
@@ -1084,6 +1093,7 @@ async function findOrCreateConversation(
   accountId: string,
   configOwnerUserId: string,
   contactId: string,
+  whatsappConfigId: string,
 ) {
   // Look for an existing conversation in this account, oldest-first.
   //
@@ -1112,7 +1122,12 @@ async function findOrCreateConversation(
   }
 
   if (existingRows && existingRows.length > 0) {
-    return { conversation: existingRows[0], created: false }
+    const conversation = await adoptInboundConnectionForExistingConversation(supabaseAdmin(), {
+      conversation: existingRows[0],
+      accountId,
+      whatsappConfigId,
+    })
+    return { conversation, created: false }
   }
 
   // Create new conversation. Same tenancy + audit split as
@@ -1123,6 +1138,7 @@ async function findOrCreateConversation(
       account_id: accountId,
       user_id: configOwnerUserId,
       contact_id: contactId,
+      whatsapp_config_id: whatsappConfigId,
     })
     .select()
     .single()
@@ -1141,7 +1157,12 @@ async function findOrCreateConversation(
         .order('created_at', { ascending: true })
         .limit(1)
       if (raced && raced.length > 0) {
-        return { conversation: raced[0], created: false }
+        const conversation = await adoptInboundConnectionForExistingConversation(supabaseAdmin(), {
+          conversation: raced[0],
+          accountId,
+          whatsappConfigId,
+        })
+        return { conversation, created: false }
       }
     }
     console.error('Error creating conversation:', createError)

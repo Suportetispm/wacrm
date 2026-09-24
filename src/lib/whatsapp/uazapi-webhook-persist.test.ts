@@ -36,6 +36,8 @@ interface DbState {
   /** When set, the post-RPC re-read itself errors — routingState must
    *  come back `null`, never a fabricated `{queueId:null,...}`. */
   rereadError: { code: string } | null
+  /** ETAPA 078B: whatsapp_config count for the account (legacy NULL adoption). */
+  configCount: number
 }
 
 function defaultState(overrides: Partial<DbState> = {}): DbState {
@@ -49,6 +51,7 @@ function defaultState(overrides: Partial<DbState> = {}): DbState {
     priorCustomerMsgCount: 0,
     freshConversation: { queue_id: null, assigned_agent_id: null },
     rereadError: null,
+    configCount: 1,
     ...overrides,
   }
 }
@@ -84,6 +87,8 @@ function makeDb(state: DbState) {
     b.order = vi.fn(() => b)
     b.limit = vi.fn(() => b)
     b.insert = vi.fn(() => b)
+    b.update = vi.fn(() => b)
+    b.is = vi.fn(() => b)
     b.single = vi.fn(() =>
       Promise.resolve(
         state.conversationInsertError
@@ -122,6 +127,13 @@ function makeDb(state: DbState) {
       if (table === 'contacts') return contactsBuilder()
       if (table === 'conversations') return conversationsBuilder()
       if (table === 'messages') return messagesBuilder()
+      if (table === 'whatsapp_config') {
+        const b: Record<string, unknown> = {}
+        b.select = vi.fn(() => b)
+        b.eq = vi.fn(() => b)
+        b.then = (resolve: (v: unknown) => unknown) => resolve({ count: state.configCount, error: null })
+        return b
+      }
       throw new Error(`unexpected table in test: ${table}`)
     }),
     rpc,
@@ -130,7 +142,12 @@ function makeDb(state: DbState) {
   return { db: db as unknown as SupabaseClient, rpc }
 }
 
-const ARGS_BASE = { accountId: 'acct-1', configOwnerUserId: 'user-1', parsed: PARSED }
+const ARGS_BASE = {
+  accountId: 'acct-1',
+  configOwnerUserId: 'user-1',
+  whatsappConfigId: 'cfg-1',
+  parsed: PARSED,
+}
 
 describe('persistInboundTextMessage', () => {
   it('returns outcome "persisted" when the RPC reports a new row', async () => {
@@ -352,5 +369,68 @@ describe('persistInboundTextMessage', () => {
         isFirstInboundMessage: true,
       })
     })
+  })
+})
+
+describe('persistInboundTextMessage — ETAPA 078B connection tracking', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const conversationCalls = (db: any, method: 'insert' | 'update') =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    db.from.mock.calls.flatMap((call: any[], i: number) =>
+      call[0] === 'conversations' ? db.from.mock.results[i].value[method].mock.calls : [],
+    )
+
+  it('a NEW conversation is created with whatsapp_config_id = the resolved connection', async () => {
+    const { db } = makeDb(defaultState())
+    const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: 'conv-new' })
+    const inserts = conversationCalls(db, 'insert')
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0][0]).toMatchObject({ account_id: 'acct-1', whatsapp_config_id: 'cfg-1' })
+  })
+
+  it('an existing conversation already linked is reused untouched (same conversationId to the Flow)', async () => {
+    const { db } = makeDb(
+      defaultState({ existingConversation: { id: 'conv-existing', account_id: 'acct-1', whatsapp_config_id: 'cfg-1' } }),
+    )
+    const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: 'conv-existing' })
+    expect(conversationCalls(db, 'insert')).toHaveLength(0)
+    expect(conversationCalls(db, 'update')).toHaveLength(0)
+  })
+
+  it('an existing link to ANOTHER connection is never overwritten', async () => {
+    const { db } = makeDb(
+      defaultState({ existingConversation: { id: 'conv-existing', account_id: 'acct-1', whatsapp_config_id: 'cfg-other' } }),
+    )
+    const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: 'conv-existing' })
+    expect(conversationCalls(db, 'update')).toHaveLength(0)
+  })
+
+  it('a legacy NULL conversation is adopted when the account has exactly 1 connection', async () => {
+    const { db } = makeDb(
+      defaultState({
+        existingConversation: { id: 'conv-existing', account_id: 'acct-1', whatsapp_config_id: null },
+        configCount: 1,
+      }),
+    )
+    const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: 'conv-existing' })
+    const updates = conversationCalls(db, 'update')
+    expect(updates).toHaveLength(1)
+    expect(updates[0][0]).toEqual({ whatsapp_config_id: 'cfg-1' })
+  })
+
+  it('a legacy NULL conversation stays NULL when the account has >1 connections', async () => {
+    const { db } = makeDb(
+      defaultState({
+        existingConversation: { id: 'conv-existing', account_id: 'acct-1', whatsapp_config_id: null },
+        configCount: 2,
+      }),
+    )
+    const result = await persistInboundTextMessage({ db, ...ARGS_BASE })
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: 'conv-existing' })
+    expect(conversationCalls(db, 'update')).toHaveLength(0)
   })
 })

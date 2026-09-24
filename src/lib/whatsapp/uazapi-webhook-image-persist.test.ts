@@ -46,13 +46,17 @@ const NOT_AN_IMAGE_BASE64 = Buffer.from('this is definitely not an image file').
 interface TableResponse {
   data: unknown
   error: unknown
+  count?: number | null
 }
 
 // Same minimal fake Supabase query-builder as
 // uazapi-webhook-document-persist.test.ts — every chain method returns
 // itself; `.single()`/`.maybeSingle()`/awaiting the builder directly
 // resolve to the next queued response for that table.
-function makeChainable(response: TableResponse) {
+function makeChainable(
+  response: TableResponse,
+  record: (op: 'insert' | 'update', payload: unknown) => void = () => {},
+) {
   const builder: Record<string, unknown> = {}
   const chain = () => builder
   builder.select = chain
@@ -60,7 +64,15 @@ function makeChainable(response: TableResponse) {
   builder.like = chain
   builder.order = chain
   builder.limit = chain
-  builder.insert = chain
+  builder.insert = (payload: unknown) => {
+    record('insert', payload)
+    return builder
+  }
+  builder.update = (payload: unknown) => {
+    record('update', payload)
+    return builder
+  }
+  builder.is = chain
   builder.single = async () => response
   builder.maybeSingle = async () => response
   builder.then = (resolve: (v: TableResponse) => unknown, reject?: (e: unknown) => unknown) =>
@@ -72,6 +84,8 @@ interface FakeDbOptions {
   contactsQueue?: TableResponse[]
   conversationsQueue?: TableResponse[]
   messagesQueue?: TableResponse[]
+  /** ETAPA 078B: legacy-adoption connection count (`select(id, {count, head})`). */
+  whatsappConfigQueue?: TableResponse[]
   rpcResult?: TableResponse
   uploadError?: unknown
   removeError?: unknown
@@ -84,7 +98,9 @@ function createFakeDb(opts: FakeDbOptions = {}) {
       ? [...opts.conversationsQueue]
       : [{ data: [], error: null }],
     messages: opts.messagesQueue ? [...opts.messagesQueue] : [{ data: null, error: null }],
+    whatsapp_config: opts.whatsappConfigQueue ? [...opts.whatsappConfigQueue] : [],
   }
+  const writes: { table: string; op: string; payload: unknown }[] = []
 
   const upload = vi.fn(async () => ({
     data: opts.uploadError ? null : { path: 'uploaded' },
@@ -101,7 +117,7 @@ function createFakeDb(opts: FakeDbOptions = {}) {
     from(table: string): any {
       const queue = queues[table]
       const response = queue && queue.length > 0 ? queue.shift()! : { data: null, error: null }
-      return makeChainable(response)
+      return makeChainable(response, (op, payload) => writes.push({ table, op, payload }))
     },
     rpc,
     storage: {
@@ -111,6 +127,7 @@ function createFakeDb(opts: FakeDbOptions = {}) {
       },
     },
     __mocks: { upload, remove, rpc },
+    __writes: writes,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any
 }
@@ -171,6 +188,7 @@ const ARGS_BASE = {
   accountId: ACCOUNT_ID,
   configOwnerUserId: 'user-1',
   instanceToken: 'test-instance-token',
+  whatsappConfigId: 'cfg-1',
 }
 
 beforeEach(() => {
@@ -591,6 +609,7 @@ describe('persistInboundImageMessage — storage path safety', () => {
       accountId: malformedAccountId,
       configOwnerUserId: 'user-1',
       instanceToken: 'test-instance-token',
+      whatsappConfigId: 'cfg-1',
       parsed: baseParsed(),
     })
 
@@ -683,5 +702,94 @@ describe('persistInboundImageMessage — LID never becomes a phone', () => {
     const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed })
 
     expect(result).toMatchObject({ outcome: 'persisted' })
+  })
+})
+
+describe('persistInboundImageMessage — ETAPA 078B connection tracking', () => {
+  const REREAD = { data: { queue_id: null, assigned_agent_id: null }, error: null }
+  const EXISTING_CONTACT = { contactsQueue: [{ data: [NEW_CONTACT_ROW], error: null }] }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const conversationWrites = (db: any, op: string) =>
+    db.__writes.filter((w: { table: string; op: string }) => w.table === 'conversations' && w.op === op)
+
+  beforeEach(() => {
+    downloadMock.mockResolvedValue({ base64Data: VALID_JPEG_BASE64, mimetype: 'image/jpeg' })
+  })
+
+  it('a NEW conversation is created with whatsapp_config_id = the resolved connection', async () => {
+    const db = createFakeDb({ ...freshEntityQueues(), messagesQueue: [{ data: null, error: null }] })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: CONVERSATION_ID })
+    const inserts = conversationWrites(db, 'insert')
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0].payload).toMatchObject({
+      account_id: ACCOUNT_ID,
+      contact_id: CONTACT_ID,
+      whatsapp_config_id: 'cfg-1',
+    })
+  })
+
+  it('an existing conversation already linked to this connection is reused untouched', async () => {
+    const db = createFakeDb({
+      ...EXISTING_CONTACT,
+      conversationsQueue: [{ data: [{ ...NEW_CONVERSATION_ROW, whatsapp_config_id: 'cfg-1' }], error: null }, REREAD],
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: CONVERSATION_ID })
+    expect(conversationWrites(db, 'insert')).toHaveLength(0)
+    expect(conversationWrites(db, 'update')).toHaveLength(0)
+  })
+
+  it('an existing link to ANOTHER connection is never overwritten', async () => {
+    const db = createFakeDb({
+      ...EXISTING_CONTACT,
+      conversationsQueue: [{ data: [{ ...NEW_CONVERSATION_ROW, whatsapp_config_id: 'cfg-other' }], error: null }, REREAD],
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: CONVERSATION_ID })
+    expect(conversationWrites(db, 'update')).toHaveLength(0)
+  })
+
+  it('a legacy NULL conversation is adopted when the account has exactly 1 connection', async () => {
+    const db = createFakeDb({
+      ...EXISTING_CONTACT,
+      conversationsQueue: [
+        { data: [{ ...NEW_CONVERSATION_ROW, whatsapp_config_id: null }], error: null },
+        { data: [{ whatsapp_config_id: 'cfg-1' }], error: null }, // adoption UPDATE ... RETURNING
+        REREAD,
+      ],
+      whatsappConfigQueue: [{ data: null, error: null, count: 1 }],
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: CONVERSATION_ID })
+    const updates = conversationWrites(db, 'update')
+    expect(updates).toHaveLength(1)
+    expect(updates[0].payload).toEqual({ whatsapp_config_id: 'cfg-1' })
+    expect(conversationWrites(db, 'insert')).toHaveLength(0)
+  })
+
+  it('a legacy NULL conversation stays NULL when the account has >1 connections', async () => {
+    const db = createFakeDb({
+      ...EXISTING_CONTACT,
+      conversationsQueue: [{ data: [{ ...NEW_CONVERSATION_ROW, whatsapp_config_id: null }], error: null }, REREAD],
+      whatsappConfigQueue: [{ data: null, error: null, count: 2 }],
+      messagesQueue: [{ data: null, error: null }],
+    })
+
+    const result = await persistInboundImageMessage({ db, ...ARGS_BASE, parsed: baseParsed() })
+
+    expect(result).toMatchObject({ outcome: 'persisted', conversationId: CONVERSATION_ID })
+    expect(conversationWrites(db, 'update')).toHaveLength(0)
   })
 })

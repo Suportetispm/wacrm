@@ -904,3 +904,50 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — accounts.is_active ga
     warnSpy.mockRestore()
   })
 })
+
+describe('POST /api/uazapi/webhook — ETAPA 078B: connection comes from the resolved config, never the payload', () => {
+  // A hostile/odd payload that tries to name its own connection — must be ignored.
+  const HOSTILE_BODY = { EventType: 'messages', whatsapp_config_id: 'cfg-attacker', whatsappConfigId: 'cfg-attacker' }
+
+  it('text: persistInboundTextMessage receives whatsappConfigId = config.id', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue({
+      externalMessageId: 'ext-1',
+      phone: '551199999999',
+      name: 'Fixture',
+      text: 'hi',
+      occurredAt: '2026-01-01T00:00:00.000Z',
+    })
+    mocks.persistInboundTextMessage.mockResolvedValue({ outcome: 'duplicate' })
+
+    await POST(request(HOSTILE_BODY), params)
+
+    expect(mocks.persistInboundTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: CONFIG_ROW.account_id, whatsappConfigId: CONFIG_ROW.id }),
+    )
+  })
+
+  it('document: persistInboundDocumentMessage receives whatsappConfigId = config.id', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue(null)
+    mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
+    mocks.persistInboundDocumentMessage.mockResolvedValue({ outcome: 'duplicate' })
+
+    await POST(request(HOSTILE_BODY), params)
+
+    expect(mocks.persistInboundDocumentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: CONFIG_ROW.account_id, whatsappConfigId: CONFIG_ROW.id }),
+    )
+  })
+
+  it('image: persistInboundImageMessage receives whatsappConfigId = config.id', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue(null)
+    mocks.parseInboundDocumentMessage.mockReturnValue(null)
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'duplicate' })
+
+    await POST(request(HOSTILE_BODY), params)
+
+    expect(mocks.persistInboundImageMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: CONFIG_ROW.account_id, whatsappConfigId: CONFIG_ROW.id }),
+    )
+  })
+})

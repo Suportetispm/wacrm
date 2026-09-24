@@ -133,6 +133,8 @@ export async function POST(
       db: supabaseAdmin(),
       accountId: config.account_id,
       configOwnerUserId: config.user_id,
+      // ETAPA 078B: resolved above from instanceId + HMAC — never from the payload.
+      whatsappConfigId: config.id,
       parsed: parsedMessage,
     })
 
@@ -217,6 +219,8 @@ export async function POST(
       db: supabaseAdmin(),
       accountId: config.account_id,
       configOwnerUserId: config.user_id,
+      // ETAPA 078B: resolved above from instanceId + HMAC — never from the payload.
+      whatsappConfigId: config.id,
       instanceToken,
       parsed: parsedDocument,
     })
@@ -295,6 +299,8 @@ export async function POST(
       db: supabaseAdmin(),
       accountId: config.account_id,
       configOwnerUserId: config.user_id,
+      // ETAPA 078B: resolved above from instanceId + HMAC — never from the payload.
+      whatsappConfigId: config.id,
       instanceToken,
       parsed: parsedImage,
     })

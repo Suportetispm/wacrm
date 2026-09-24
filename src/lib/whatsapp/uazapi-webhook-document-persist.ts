@@ -32,6 +32,7 @@ import {
   UazapiHttpError,
 } from './uazapi-api'
 import { resolveCanonicalPhone } from './uazapi-webhook-identity'
+import { adoptInboundConnectionForExistingConversation } from './inbound-conversation-connection'
 import type { ParsedInboundDocumentMessage } from './uazapi-webhook-document-parser'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -47,6 +48,8 @@ export interface PersistInboundDocumentMessageArgs {
   configOwnerUserId: string
   /** Already-decrypted UAZAPI instance token — decryption stays the caller's job, same as the route's existing pattern. */
   instanceToken: string
+  /** ETAPA 078B: the whatsapp_config the message arrived on — always the row the route resolved from instanceId + HMAC, never anything from the payload. */
+  whatsappConfigId: string
   parsed: ParsedInboundDocumentMessage
 }
 
@@ -211,6 +214,7 @@ export async function persistInboundDocumentMessage({
   accountId,
   configOwnerUserId,
   instanceToken,
+  whatsappConfigId,
   parsed,
 }: PersistInboundDocumentMessageArgs): Promise<PersistInboundDocumentOutcome> {
   const { phone } = extractPhone(parsed)
@@ -225,7 +229,13 @@ export async function persistInboundDocumentMessage({
   )
   if (!contact) return { outcome: 'error', code: 'contact_failed' }
 
-  const conversation = await findOrCreateConversation(db, accountId, configOwnerUserId, contact.id)
+  const conversation = await findOrCreateConversation(
+    db,
+    accountId,
+    configOwnerUserId,
+    contact.id,
+    whatsappConfigId,
+  )
   if (!conversation) return { outcome: 'error', code: 'conversation_failed' }
 
   // Tenancy: `findOrCreateConversation` already scopes its query by
@@ -483,6 +493,7 @@ async function findOrCreateConversation(
   accountId: string,
   configOwnerUserId: string,
   contactId: string,
+  whatsappConfigId: string,
 ): Promise<Row | null> {
   const { data: existingRows, error: findError } = await db
     .from('conversations')
@@ -499,11 +510,22 @@ async function findOrCreateConversation(
     )
     return null
   }
-  if (existingRows && existingRows.length > 0) return existingRows[0]
+  if (existingRows && existingRows.length > 0) {
+    return adoptInboundConnectionForExistingConversation(db, {
+      conversation: existingRows[0],
+      accountId,
+      whatsappConfigId,
+    })
+  }
 
   const { data: created, error: createError } = await db
     .from('conversations')
-    .insert({ account_id: accountId, user_id: configOwnerUserId, contact_id: contactId })
+    .insert({
+      account_id: accountId,
+      user_id: configOwnerUserId,
+      contact_id: contactId,
+      whatsapp_config_id: whatsappConfigId,
+    })
     .select()
     .single()
 
@@ -517,7 +539,13 @@ async function findOrCreateConversation(
       .eq('contact_id', contactId)
       .order('created_at', { ascending: true })
       .limit(1)
-    if (raced && raced.length > 0) return raced[0]
+    if (raced && raced.length > 0) {
+      return adoptInboundConnectionForExistingConversation(db, {
+        conversation: raced[0],
+        accountId,
+        whatsappConfigId,
+      })
+    }
   }
   console.error(
     '[uazapi/webhook:document-persist] conversation insert failed:',
