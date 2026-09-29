@@ -1,0 +1,57 @@
+-- ============================================================
+-- 077_whatsapp_config_multiconnection
+--
+-- Remove o único obstáculo de banco que impedia multiconexão:
+-- `whatsapp_config_account_id_key` (UNIQUE(account_id), migration 017,
+-- comentário original "one WhatsApp number per ACCOUNT"). Esta é a
+-- migration 077 FINAL — o código já foi preparado nas etapas 077A
+-- (leituras/updates/deletes deixaram de assumir "0 ou 1 linha por
+-- account") e 077B (POST /api/uazapi/instance já insere sempre uma
+-- linha nova e independente, sem lookup por account_id).
+--
+-- ARQUITETURA CONFIRMADA (ver docs/SESSION_PROGRESS_2026-09-22.md):
+-- uma account pode ter N instâncias UAZAPI (um número cada) mais,
+-- opcionalmente, uma conexão Meta coexistindo — sem limite artificial
+-- de "1 por account" ou "1 por provider". A conexão de origem NÃO
+-- decide fila/setor — isso continua sendo escolha do Flow.
+--
+-- DELIBERADAMENTE NÃO FEITO NESTA MIGRATION:
+--   - NÃO cria UNIQUE(account_id, provider) nem qualquer variante —
+--     não há regra de "1 por provider" no desenho confirmado; uma
+--     account pode ter, por exemplo, 3 instâncias uazapi simultâneas.
+--   - NÃO limita quantidade de conexões por account.
+--   - NÃO adiciona UNIQUE em uazapi_instance_id — o preflight
+--     (supabase/validation/077_whatsapp_config_multiconnection_
+--     preflight_check.sql) já reporta duplicidades atuais dessa coluna
+--     para decisão futura; não é objetivo desta etapa (ver riscos
+--     residuais no relatório da sessão).
+--   - NÃO toca dados, RLS, policies, triggers, FKs, phone_number_id,
+--     conversations, Flow, Tickets, Meta, UAZAPI (API externa) ou UI.
+--
+-- Preservado explicitamente por esta migration:
+--   - whatsapp_config_pkey (PK id)
+--   - whatsapp_config_phone_number_id_key (UNIQUE phone_number_id, 013)
+--   - whatsapp_config_status_check (037)
+--   - idx_whatsapp_config_account (índice normal, 017 — já existe
+--     INDEPENDENTE da UNIQUE removida abaixo; continua útil para busca
+--     por account_id, nenhuma ação necessária)
+--   - Todas as policies (whatsapp_config_select/insert/update/delete)
+--     e triggers (set_updated_at, validate_default_queue_account) —
+--     nenhum deles depende de account_id ser único.
+--
+-- Pré-requisito: preflight
+-- (supabase/validation/077_whatsapp_config_multiconnection_
+-- preflight_check.sql) rodado contra o banco de produção real e
+-- confirmando: nome exato da constraint, nenhuma account com >1 linha
+-- hoje (esperado, já que a UNIQUE ainda está em vigor até este DROP),
+-- nenhuma duplicidade de phone_number_id.
+-- ============================================================
+
+ALTER TABLE public.whatsapp_config
+  DROP CONSTRAINT whatsapp_config_account_id_key;
+
+-- ============================================================
+-- VALIDAÇÃO MANUAL — ver supabase/validation/
+-- 077_whatsapp_config_multiconnection_check.sql. NÃO executado
+-- automaticamente por esta migration.
+-- ============================================================
