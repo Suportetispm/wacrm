@@ -1,16 +1,26 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  CONVERSATION_SELECT,
   countConversationsByStatus,
+  effectiveActiveTicket,
+  fetchConversationActiveTicket,
   matchesContactFilters,
   matchesInboxFilters,
   moveConversationToTop,
   normalizeConversation,
+  pickActiveTicket,
   reconcileLoadedConversations,
   shouldRollbackConversationPreview,
   sortConversationsByRecentActivity,
   updateConversationPreview,
 } from "./conversations";
-import type { Conversation, ConversationStatus } from "@/types";
+import { resolveAssignChangeAction, resolveStatusChangeAction } from "./ticket-sync";
+import type {
+  ActiveConversationTicket,
+  Conversation,
+  ConversationStatus,
+} from "@/types";
 
 function makeConversation(
   contact: Partial<Conversation["contact"]> | null,
@@ -148,6 +158,80 @@ describe("normalizeConversation", () => {
     };
     // A contactless row passes through untouched (consumers use `?.`).
     expect(normalizeConversation(raw).contact).toBeNull();
+  });
+
+  // 068 Etapa 2 — the `tickets(...)` embed is unfiltered (see
+  // CONVERSATION_SELECT's doc comment), so normalizeConversation must
+  // pick out the one active row itself.
+  it("picks the open/pending ticket out of the embedded tickets array as active_ticket", () => {
+    const raw = {
+      id: "c1",
+      user_id: "u1",
+      contact_id: "ct1",
+      status: "in_progress" as const,
+      unread_count: 0,
+      created_at: "",
+      updated_at: "",
+      contact: null,
+      tickets: [
+        { id: "t-old", status: "closed" as const, assigned_agent_id: null, queue_id: "q1" },
+        { id: "t-active", status: "open" as const, assigned_agent_id: "u9", queue_id: "q1" },
+      ],
+    };
+    expect(normalizeConversation(raw).active_ticket).toEqual({
+      id: "t-active",
+      status: "open",
+      assigned_agent_id: "u9",
+      queue_id: "q1",
+    });
+  });
+
+  it("sets active_ticket to null when every embedded ticket is closed", () => {
+    const raw = {
+      id: "c1",
+      user_id: "u1",
+      contact_id: "ct1",
+      status: "closed" as const,
+      unread_count: 0,
+      created_at: "",
+      updated_at: "",
+      contact: null,
+      tickets: [
+        { id: "t-old", status: "closed" as const, assigned_agent_id: null, queue_id: null },
+      ],
+    };
+    expect(normalizeConversation(raw).active_ticket).toBeNull();
+  });
+
+  it("sets active_ticket to null when the tickets embed is absent/empty", () => {
+    const raw = {
+      id: "c1",
+      user_id: "u1",
+      contact_id: "ct1",
+      status: "pending" as const,
+      unread_count: 0,
+      created_at: "",
+      updated_at: "",
+      contact: null,
+    };
+    expect(normalizeConversation(raw).active_ticket).toBeNull();
+    expect(normalizeConversation({ ...raw, tickets: [] }).active_ticket).toBeNull();
+  });
+});
+
+describe("pickActiveTicket", () => {
+  it("returns null for null/undefined/empty input", () => {
+    expect(pickActiveTicket(null)).toBeNull();
+    expect(pickActiveTicket(undefined)).toBeNull();
+    expect(pickActiveTicket([])).toBeNull();
+  });
+
+  it("defensively returns only the first active match if somehow more than one exists", () => {
+    const tickets = [
+      { id: "t1", status: "open" as const, assigned_agent_id: null, queue_id: null },
+      { id: "t2", status: "pending" as const, assigned_agent_id: "u1", queue_id: null },
+    ];
+    expect(pickActiveTicket(tickets)?.id).toBe("t1");
   });
 });
 
@@ -683,5 +767,168 @@ describe("sortConversationsByRecentActivity", () => {
     for (let i = 0; i < timestamps.length - 1; i++) {
       expect(timestamps[i]).toBeGreaterThanOrEqual(timestamps[i + 1]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 068 Etapa 2 — P1: re-reading active_ticket after an Inbox ticket action
+// ---------------------------------------------------------------------------
+
+const TICKET: ActiveConversationTicket = {
+  id: "t1",
+  status: "open",
+  assigned_agent_id: null,
+  queue_id: "q1",
+};
+
+/**
+ * Minimal stand-in for the one chain fetchConversationActiveTicket uses:
+ * from("conversations").select(...).eq("id", ...).maybeSingle().
+ * `row` is what the DB holds AFTER the ticket RPC ran.
+ */
+function mockConversationRead(result: { data: unknown; error: unknown }) {
+  const maybeSingle = vi.fn(async () => result);
+  const eq = vi.fn(() => ({ maybeSingle }));
+  const select = vi.fn(() => ({ eq }));
+  const from = vi.fn(() => ({ select }));
+  return { client: { from } as unknown as SupabaseClient, from, select, eq };
+}
+
+function rowWithTickets(tickets: ActiveConversationTicket[]) {
+  return {
+    ...makeConversation(null),
+    contact: undefined,
+    tickets,
+  };
+}
+
+async function refetched(tickets: ActiveConversationTicket[]) {
+  const { client } = mockConversationRead({ data: rowWithTickets(tickets), error: null });
+  const result = await fetchConversationActiveTicket(client, "c1");
+  if (!result) throw new Error("expected a successful read");
+  return result.activeTicket;
+}
+
+describe("fetchConversationActiveTicket", () => {
+  it("re-reads the conversation with CONVERSATION_SELECT, by id", async () => {
+    const m = mockConversationRead({ data: rowWithTickets([TICKET]), error: null });
+    await fetchConversationActiveTicket(m.client, "c1");
+    expect(m.from).toHaveBeenCalledWith("conversations");
+    expect(m.select).toHaveBeenCalledWith(CONVERSATION_SELECT);
+    expect(m.eq).toHaveBeenCalledWith("id", "c1");
+  });
+
+  it("after close: the ticket is no longer active (null)", async () => {
+    expect(await refetched([{ ...TICKET, status: "closed", assigned_agent_id: "me" }])).toBeNull();
+  });
+
+  it("after claim: assigned_agent_id reflects the new assignee", async () => {
+    expect(await refetched([{ ...TICKET, assigned_agent_id: "me" }])).toMatchObject({
+      id: "t1",
+      status: "open",
+      assigned_agent_id: "me",
+    });
+  });
+
+  it("after transfer-agent: assigned_agent_id reflects the new agent", async () => {
+    expect(await refetched([{ ...TICKET, assigned_agent_id: "agent-2" }])).toMatchObject({
+      assigned_agent_id: "agent-2",
+    });
+  });
+
+  it("after waiting-customer / resume: status reflects the ticket's new state", async () => {
+    expect(await refetched([{ ...TICKET, status: "pending", assigned_agent_id: "me" }])).toMatchObject({
+      status: "pending",
+    });
+    expect(await refetched([{ ...TICKET, status: "open", assigned_agent_id: "me" }])).toMatchObject({
+      status: "open",
+    });
+  });
+
+  it("returns null (keep current state) when the read errors", async () => {
+    const { client } = mockConversationRead({ data: null, error: { message: "boom" } });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await fetchConversationActiveTicket(client, "c1")).toBeNull();
+    spy.mockRestore();
+  });
+
+  it("returns null (keep current state) when the row is not found", async () => {
+    const { client } = mockConversationRead({ data: null, error: null });
+    expect(await fetchConversationActiveTicket(client, "c1")).toBeNull();
+  });
+});
+
+describe("effectiveActiveTicket", () => {
+  const stale: ActiveConversationTicket = { ...TICKET };
+  const conv = { id: "c1", active_ticket: stale };
+
+  it("without an override, uses the conversation's own active_ticket (unchanged behaviour)", () => {
+    expect(effectiveActiveTicket(conv, null)).toBe(stale);
+    expect(effectiveActiveTicket({ id: "c1", active_ticket: null }, null)).toBeNull();
+    expect(effectiveActiveTicket({ id: "c1" }, null)).toBeNull();
+  });
+
+  it("applies an override taken for this conversation against the same active_ticket", () => {
+    const fresh = { ...TICKET, assigned_agent_id: "me" };
+    expect(
+      effectiveActiveTicket(conv, { conversationId: "c1", base: stale, activeTicket: fresh }),
+    ).toBe(fresh);
+  });
+
+  it("applies a null override (ticket closed) the same way", () => {
+    expect(
+      effectiveActiveTicket(conv, { conversationId: "c1", base: stale, activeTicket: null }),
+    ).toBeNull();
+  });
+
+  it("survives a realtime merge / local patch that spreads the old object", () => {
+    const fresh = { ...TICKET, assigned_agent_id: "me" };
+    const merged = { ...conv, status: "in_progress" as ConversationStatus };
+    expect(
+      effectiveActiveTicket(merged, { conversationId: "c1", base: stale, activeTicket: fresh }),
+    ).toBe(fresh);
+  });
+
+  it("ignores an override that belongs to another conversation", () => {
+    expect(
+      effectiveActiveTicket(conv, { conversationId: "c2", base: stale, activeTicket: null }),
+    ).toBe(stale);
+  });
+
+  it("yields to a list reload (new active_ticket reference) fetched after the override", () => {
+    const reloaded = { ...TICKET, status: "pending" as const };
+    expect(
+      effectiveActiveTicket(
+        { id: "c1", active_ticket: reloaded },
+        { conversationId: "c1", base: stale, activeTicket: null },
+      ),
+    ).toBe(reloaded);
+  });
+});
+
+describe("P1 — the next Inbox action is classified against the refreshed ticket", () => {
+  const stale: ActiveConversationTicket = { ...TICKET }; // open, unassigned
+  const conv = { id: "c1", active_ticket: stale };
+  const withFresh = (fresh: ActiveConversationTicket | null) =>
+    effectiveActiveTicket(conv, { conversationId: "c1", base: stale, activeTicket: fresh });
+
+  it("after claim, reassigning to another agent is a transfer (stale ticket said unavailable)", () => {
+    expect(resolveAssignChangeAction(stale, "agent-2", "me").kind).toBe("unavailable");
+    expect(
+      resolveAssignChangeAction(withFresh({ ...TICKET, assigned_agent_id: "me" }), "agent-2", "me"),
+    ).toEqual({ kind: "ticket-rpc", op: "transfer_agent", agentUserId: "agent-2" });
+  });
+
+  it("after close, 'pending' is no longer blocked by the closed ticket", () => {
+    expect(resolveStatusChangeAction(stale, "pending").kind).toBe("unavailable");
+    expect(resolveStatusChangeAction(withFresh(null), "pending").kind).toBe("direct");
+  });
+
+  it("after waiting-customer, in_progress maps to resume", () => {
+    const pending = { ...TICKET, status: "pending" as const, assigned_agent_id: "me" };
+    expect(resolveStatusChangeAction(withFresh(pending), "in_progress")).toEqual({
+      kind: "ticket-rpc",
+      op: "resume",
+    });
   });
 });

@@ -1,34 +1,74 @@
-import type { Conversation, ConversationStatus, Contact, Tag } from "@/types";
+import type {
+  ActiveConversationTicket,
+  Conversation,
+  ConversationStatus,
+  Contact,
+  Tag,
+} from "@/types";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isUniqueViolation } from "@/lib/contacts/dedupe";
 
 /**
- * Conversation select that embeds the contact plus its tags, so the Inbox
- * can filter conversations by contact tag without a second round-trip.
- * `contact_tags(tags(*))` returns the join rows; {@link normalizeConversation}
- * flattens them onto `contact.tags`.
+ * Conversation select that embeds the contact plus its tags (so the Inbox
+ * can filter by contact tag without a second round-trip) and every ticket
+ * for this conversation, narrowed down to `active_ticket` by
+ * {@link normalizeConversation} — see migration 068's Etapa 2 gap fix.
+ * `tickets(...)` embeds ALL of the conversation's tickets (closed history
+ * included) rather than filtering server-side: the DB already guarantees
+ * at most one row with status IN ('open','pending')
+ * (`idx_tickets_one_active_per_conversation`, 040_tickets.sql), so picking
+ * the active one client-side ({@link pickActiveTicket}) avoids touching
+ * every call site's query chain (list, new-conversation modal, /api/v1)
+ * just to add a per-embed filter — this is a left join, so a conversation
+ * with no tickets at all still comes back, just with `tickets: []`.
  */
 export const CONVERSATION_SELECT =
-  "*, contact:contacts(*, contact_tags(tags(*)))";
+  "*, contact:contacts(*, contact_tags(tags(*))), tickets(id, status, assigned_agent_id, queue_id)";
 
 /** Raw shape returned by {@link CONVERSATION_SELECT} before flattening. */
 type RawContact = Contact & { contact_tags?: { tags: Tag | null }[] };
-type RawConversation = Omit<Conversation, "contact"> & {
+type RawConversation = Omit<Conversation, "contact" | "active_ticket"> & {
   contact?: RawContact | null;
+  tickets?: ActiveConversationTicket[] | null;
 };
 
 /**
- * Flatten the embedded `contact_tags(tags(*))` join into `contact.tags`.
- * Safe to call on rows fetched with {@link CONVERSATION_SELECT}; a row with
- * no contact (e.g. a freshly-inserted conversation) passes through untouched.
+ * Picks the conversation's active ticket (status IN ('open','pending'))
+ * out of the raw, unfiltered `tickets` embed. Defensive against more than
+ * one match (returns the first) even though the DB's partial unique index
+ * should never allow it — a stale/racy read is safer to under-react to
+ * than to throw on.
+ */
+export function pickActiveTicket(
+  tickets: ActiveConversationTicket[] | null | undefined,
+): ActiveConversationTicket | null {
+  if (!tickets) return null;
+  return (
+    tickets.find((t) => t.status === "open" || t.status === "pending") ??
+    null
+  );
+}
+
+/**
+ * Flatten the embedded `contact_tags(tags(*))` join into `contact.tags`,
+ * and the embedded `tickets(...)` join into `active_ticket`. Safe to call
+ * on rows fetched with {@link CONVERSATION_SELECT}; a row with no contact
+ * (e.g. a freshly-inserted conversation) passes through untouched, same
+ * for one with no tickets at all.
  */
 export function normalizeConversation(raw: RawConversation): Conversation {
   const rawContact = raw.contact;
-  if (!rawContact) return raw as Conversation;
+  const { tickets, ...rest } = raw;
+  const normalized: Conversation = {
+    ...(rest as Omit<Conversation, "contact" | "active_ticket">),
+    active_ticket: pickActiveTicket(tickets),
+  };
+
+  if (!rawContact) return normalized;
 
   const { contact_tags, ...contact } = rawContact;
   return {
-    ...raw,
+    ...normalized,
     contact: {
       ...contact,
       tags: (contact_tags ?? [])
@@ -42,6 +82,76 @@ export function normalizeConversations(
   rows: RawConversation[],
 ): Conversation[] {
   return rows.map(normalizeConversation);
+}
+
+/**
+ * Re-reads one conversation's `active_ticket` after an Inbox ticket
+ * action succeeds (068 Etapa 2, P1). The realtime `conversations`
+ * UPDATE that follows a ticket RPC only carries the conversation's own
+ * columns, so the embedded ticket would otherwise stay as it was when
+ * the list loaded. Reuses {@link CONVERSATION_SELECT} +
+ * {@link normalizeConversation} so this is the exact same RLS-scoped
+ * view the list shows — a ticket the caller can no longer see comes
+ * back `null`, and the 069 visibility check takes it from there.
+ *
+ * Returns `null` (not "no active ticket") when the read fails or the
+ * row is gone, so callers keep what they had instead of guessing.
+ */
+export async function fetchConversationActiveTicket(
+  supabase: SupabaseClient,
+  conversationId: string,
+): Promise<{ activeTicket: ActiveConversationTicket | null } | null> {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select(CONVERSATION_SELECT)
+    .eq("id", conversationId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Failed to refresh the conversation's active ticket:", error);
+    return null;
+  }
+  if (!data) return null;
+
+  return {
+    activeTicket: normalizeConversation(data as RawConversation).active_ticket ?? null,
+  };
+}
+
+/**
+ * A fresher `active_ticket` for one conversation, fetched by
+ * {@link fetchConversationActiveTicket} after a ticket action. `base`
+ * is the `conversation.active_ticket` reference the override was taken
+ * against — see {@link effectiveActiveTicket}.
+ */
+export interface ActiveTicketOverride {
+  conversationId: string;
+  base: ActiveConversationTicket | null;
+  activeTicket: ActiveConversationTicket | null;
+}
+
+/**
+ * The active ticket the Inbox should act on: the override when it
+ * belongs to this conversation AND the conversation's own
+ * `active_ticket` is still the same reference it was taken against,
+ * otherwise the conversation's own value. Realtime merges and local
+ * status/assignee patches spread the old object (same reference), so
+ * the override survives them; a list reload re-normalizes every row
+ * (new reference), so data fetched after the override wins over it.
+ */
+export function effectiveActiveTicket(
+  conversation: Pick<Conversation, "id" | "active_ticket">,
+  override: ActiveTicketOverride | null,
+): ActiveConversationTicket | null {
+  const own = conversation.active_ticket ?? null;
+  if (
+    override &&
+    override.conversationId === conversation.id &&
+    override.base === own
+  ) {
+    return override.activeTicket;
+  }
+  return own;
 }
 
 /**

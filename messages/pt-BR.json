@@ -476,6 +476,8 @@
       "statusClosed": "Encerrada",
       "statusFinalized": "Finalizada",
       "statusUpdateFailed": "Não foi possível atualizar o status da conversa.",
+      "ticketActionUnavailable": "Essa ação deve ser feita pelo chamado.",
+      "activeTicketHidden": "Esta conversa tem um chamado ativo ao qual você não tem acesso. Peça a um usuário autorizado para gerenciá-lo pelo chamado.",
       "assign": "Atribuir",
       "assigned": "Atribuído",
       "unassign": "Remover atribuição",

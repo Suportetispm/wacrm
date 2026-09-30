@@ -476,6 +476,8 @@
       "statusClosed": "Closed",
       "statusFinalized": "Finalized",
       "statusUpdateFailed": "Couldn't update the conversation status.",
+      "ticketActionUnavailable": "This action must be done from the ticket.",
+      "activeTicketHidden": "This conversation has an active ticket you don't have access to. Ask an authorized teammate to manage it from the ticket.",
       "assign": "Assign",
       "assigned": "Assigned",
       "unassign": "Unassign",

@@ -476,6 +476,8 @@
       "statusClosed": "닫힘",
       "statusFinalized": "완료",
       "statusUpdateFailed": "대화 상태를 업데이트하지 못했습니다.",
+      "ticketActionUnavailable": "이 작업은 티켓에서 수행해야 합니다.",
+      "activeTicketHidden": "이 대화에는 접근 권한이 없는 활성 티켓이 있습니다. 권한이 있는 팀원에게 티켓에서 처리해 달라고 요청하세요.",
       "assign": "담당자 지정",
       "assigned": "담당자 지정됨",
       "unassign": "담당자 해제",

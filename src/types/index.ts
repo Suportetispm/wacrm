@@ -172,6 +172,24 @@ export type ConversationStatus =
   | 'closed'
   | 'finalized';
 
+/**
+ * The account's currently-active ticket (tickets.status IN
+ * ('open','pending')) for a conversation — see migration 068's Etapa
+ * 2 gap fix. Hydrated by {@link CONVERSATION_SELECT}'s `tickets(...)`
+ * embed + normalizeConversation's active-ticket pick
+ * (src/lib/inbox/conversations.ts); `null`/absent means either there
+ * genuinely is no active ticket, or RLS hides it from the current
+ * viewer (tickets_select scopes a plain agent to tickets they're
+ * assigned to or a queue member of — see 040_tickets.sql). Read-only
+ * — never written back through this type.
+ */
+export interface ActiveConversationTicket {
+  id: string;
+  status: TicketStatus;
+  assigned_agent_id: string | null;
+  queue_id: string | null;
+}
+
 export interface Conversation {
   id: string;
   user_id: string;
@@ -184,6 +202,7 @@ export interface Conversation {
   created_at: string;
   updated_at: string;
   contact?: Contact;
+  active_ticket?: ActiveConversationTicket | null;
   /**
    * AI auto-reply state for this thread (migration 029 + 033):
    *  - `ai_autoreply_disabled` — the bot is paused here (a human took

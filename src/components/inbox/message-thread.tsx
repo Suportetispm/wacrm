@@ -52,6 +52,21 @@ import { TemplatePicker } from "./template-picker";
 import { AiThreadBanner } from "./ai-thread-banner";
 import { buildReplyPreview } from "./reply-quote";
 import { markConversationRead } from "@/lib/inbox/mark-read";
+import {
+  resolveStatusChangeAction,
+  resolveAssignChangeAction,
+  statusActionRequest,
+  statusActionToastKey,
+  assignActionRequest,
+  assignActionToastKey,
+} from "@/lib/inbox/ticket-sync";
+import { resolveActiveTicketVisibility } from "@/lib/inbox/active-ticket-visibility";
+import {
+  effectiveActiveTicket,
+  fetchConversationActiveTicket,
+  type ActiveTicketOverride,
+} from "@/lib/inbox/conversations";
+import { classifyTicketActionError } from "@/lib/tickets/status";
 import { toast } from "sonner";
 
 interface ReplyDraft {
@@ -210,6 +225,10 @@ export function MessageThread({
   const t = useTranslations("Inbox.messageThread");
   const tTimer = useTranslations("Inbox.sessionTimer");
   const tQuote = useTranslations("Inbox.replyQuote");
+  // Ticket-action error/success copy is reused verbatim from the
+  // /tickets module (068 Etapa 2) rather than re-authored here — same
+  // namespace classifyTicketActionError's translatedKey is meant for.
+  const ta = useTranslations("Tickets.actions");
 
   const { user } = useAuth();
   const { getPresence, getRow, now } = usePresence();
@@ -757,16 +776,59 @@ export function MessageThread({
   );
 
   // Estado otimista com rollback: a UI reflete a mudança na hora
-  // (onStatusChange chamado antes do await), mas se o UPDATE falhar a
-  // conversa volta ao status anterior e um toast avisa o erro — ao
+  // (onStatusChange chamado antes do await), mas se o UPDATE/RPC falhar
+  // a conversa volta ao status anterior e um toast avisa o erro — ao
   // contrário do comportamento antigo, que nunca checava `error` e
   // sempre chamava onStatusChange mesmo quando o write falhava
   // silenciosamente. `statusChangeInFlightRef` evita que um segundo
   // clique dispare uma troca concorrente enquanto a primeira ainda
   // está em voo. Só altera `status` — nunca unread_count,
   // assigned_agent_id ou qualquer campo de ticket.
+  //
+  // 068 Etapa 2: quando a conversation tem um ticket ativo
+  // (tickets.status IN ('open','pending')), o UPDATE direto acima
+  // pode divergir de tickets.* — resolveStatusChangeAction decide, sem
+  // tocar rede, se este target status tem uma RPC de ticket segura
+  // (mark_ticket_waiting_customer/resume_ticket/claim_ticket/
+  // close_ticket) ou se a ação fica indisponível. Sem ticket ativo,
+  // o comportamento é idêntico ao anterior.
   const statusChangeInFlightRef = useRef(false);
   const [statusUpdating, setStatusUpdating] = useState(false);
+
+  // 068 Etapa 2 (P1): a ticket RPC changes tickets.*, but the realtime
+  // conversations UPDATE that follows never carries the embedded
+  // `active_ticket` — so after a successful ticket action the prop can
+  // keep the pre-action ticket (still active after close, still
+  // unassigned after claim, ...). After each successful ticket action
+  // the ticket is re-read and kept here; effectiveActiveTicket decides
+  // whether it still applies to the conversation being shown.
+  const [activeTicketOverride, setActiveTicketOverride] =
+    useState<ActiveTicketOverride | null>(null);
+  const currentActiveTicket = conversation
+    ? effectiveActiveTicket(conversation, activeTicketOverride)
+    : null;
+
+  const refreshActiveTicket = useCallback(
+    async (conv: Pick<Conversation, "id" | "active_ticket">) => {
+      // Read failed: keep what we had — the next ticket RPC still
+      // validates server-side and fails closed if it's stale. Never
+      // throws, so a failed refresh can't turn the action's success
+      // toast into an error.
+      let result: Awaited<ReturnType<typeof fetchConversationActiveTicket>> = null;
+      try {
+        result = await fetchConversationActiveTicket(createClient(), conv.id);
+      } catch (err) {
+        console.error("Failed to refresh the conversation's active ticket:", err);
+      }
+      if (!result) return;
+      setActiveTicketOverride({
+        conversationId: conv.id,
+        base: conv.active_ticket ?? null,
+        activeTicket: result.activeTicket,
+      });
+    },
+    [],
+  );
 
   const handleStatusChange = useCallback(
     async (status: ConversationStatus) => {
@@ -779,24 +841,82 @@ export function MessageThread({
       const previousStatus = conversation.status;
       const conversationId = conversation.id;
 
+      // Etapa 2 residual-risk fix (069): a visible active_ticket
+      // answers "is there one, and can I act on it" in one step, but a
+      // null one is ambiguous — genuinely no ticket, or one hidden from
+      // this viewer by tickets_select. resolveActiveTicketVisibility
+      // only pays for the RPC round-trip in that second case.
+      const visibility = await resolveActiveTicketVisibility(
+        createClient(),
+        conversationId,
+        Boolean(currentActiveTicket),
+      );
+
+      if (visibility === "check_failed") {
+        toast.error(ta("errorGeneric"));
+        statusChangeInFlightRef.current = false;
+        setStatusUpdating(false);
+        return;
+      }
+      if (visibility === "active_ticket_hidden") {
+        toast.error(t("activeTicketHidden"));
+        statusChangeInFlightRef.current = false;
+        setStatusUpdating(false);
+        return;
+      }
+
+      const action = resolveStatusChangeAction(currentActiveTicket, status);
+
+      if (action.kind === "unavailable") {
+        toast.error(t("ticketActionUnavailable"));
+        statusChangeInFlightRef.current = false;
+        setStatusUpdating(false);
+        return;
+      }
+
       onStatusChange(conversationId, status);
 
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("conversations")
-        .update({ status })
-        .eq("id", conversationId);
+      if (action.kind === "direct") {
+        const supabase = createClient();
+        const { error } = await supabase
+          .from("conversations")
+          .update({ status })
+          .eq("id", conversationId);
 
-      if (error) {
-        console.error("Failed to update conversation status:", error);
-        toast.error(t("statusUpdateFailed"));
-        onStatusChange(conversationId, previousStatus);
+        if (error) {
+          console.error("Failed to update conversation status:", error);
+          toast.error(t("statusUpdateFailed"));
+          onStatusChange(conversationId, previousStatus);
+        }
+      } else {
+        const ticketId = currentActiveTicket!.id;
+        const { url, body } = statusActionRequest(ticketId, action);
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            const info = classifyTicketActionError(res.status, data);
+            toast.error(info.translatedKey ? ta(info.translatedKey) : (info.detail ?? ta("errorGeneric")));
+            onStatusChange(conversationId, previousStatus);
+          } else {
+            toast.success(ta(statusActionToastKey(action)));
+            await refreshActiveTicket(conversation);
+          }
+        } catch (err) {
+          console.error("Failed to run ticket status action:", err);
+          toast.error(ta("errorGeneric"));
+          onStatusChange(conversationId, previousStatus);
+        }
       }
 
       statusChangeInFlightRef.current = false;
       setStatusUpdating(false);
     },
-    [conversation, onStatusChange, t]
+    [conversation, currentActiveTicket, onStatusChange, refreshActiveTicket, t, ta]
   );
 
   const handleOpenTemplates = useCallback(() => {
@@ -999,25 +1119,87 @@ export function MessageThread({
     [conversation, user?.id],
   );
 
+  // 068 Etapa 2: same active-ticket guard as handleStatusChange —
+  // resolveAssignChangeAction decides whether this reassignment can go
+  // through the existing direct UPDATE (no active ticket), a ticket RPC
+  // (claim_ticket / transfer_ticket_agent), or is unavailable (unassign,
+  // or a direct admin assign onto an unassigned ticket — no safe RPC
+  // for either yet).
   const handleAssignChange = useCallback(
     async (agentId: string | null) => {
       if (!conversation) return;
 
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("conversations")
-        .update({ assigned_agent_id: agentId })
-        .eq("id", conversation.id);
+      // Etapa 2 residual-risk fix (069) — see handleStatusChange's
+      // comment for the full rationale; same visibility check here.
+      const visibility = await resolveActiveTicketVisibility(
+        createClient(),
+        conversation.id,
+        Boolean(currentActiveTicket),
+      );
 
-      if (error) {
-        console.error("Failed to update assignment:", error);
-        toast.error("Failed to update assignment");
+      if (visibility === "check_failed") {
+        toast.error(ta("errorGeneric"));
+        return;
+      }
+      if (visibility === "active_ticket_hidden") {
+        toast.error(t("activeTicketHidden"));
         return;
       }
 
-      onAssignChange(conversation.id, agentId);
+      const action = resolveAssignChangeAction(
+        currentActiveTicket,
+        agentId,
+        user?.id ?? null,
+      );
+
+      if (action.kind === "noop") return;
+
+      if (action.kind === "unavailable") {
+        toast.error(t("ticketActionUnavailable"));
+        return;
+      }
+
+      if (action.kind === "direct") {
+        const supabase = createClient();
+        const { error } = await supabase
+          .from("conversations")
+          .update({ assigned_agent_id: agentId })
+          .eq("id", conversation.id);
+
+        if (error) {
+          console.error("Failed to update assignment:", error);
+          toast.error("Failed to update assignment");
+          return;
+        }
+
+        onAssignChange(conversation.id, agentId);
+        return;
+      }
+
+      const ticketId = currentActiveTicket!.id;
+      const { url, body } = assignActionRequest(ticketId, action);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const info = classifyTicketActionError(res.status, data);
+          toast.error(info.translatedKey ? ta(info.translatedKey) : (info.detail ?? ta("errorGeneric")));
+          return;
+        }
+        toast.success(ta(assignActionToastKey(action)));
+        onAssignChange(conversation.id, agentId);
+      } catch (err) {
+        console.error("Failed to run ticket assign action:", err);
+        toast.error(ta("errorGeneric"));
+        return;
+      }
+      await refreshActiveTicket(conversation);
     },
-    [conversation, onAssignChange],
+    [conversation, currentActiveTicket, onAssignChange, refreshActiveTicket, t, ta, user?.id],
   );
 
   // Empty state — same WhatsApp-style doodle background as the active
@@ -1049,6 +1231,18 @@ export function MessageThread({
   const assignLabel = assignedAgentId
     ? (currentAssignee?.full_name ?? t("assigned"))
     : t("assign");
+
+  // 068 Etapa 2 — with an active ticket, "pending" (Na fila) has no
+  // safe RPC (would require transfer_ticket_queue as a workaround,
+  // touching queue_id — out of scope) and "unassign" has no safe RPC
+  // either; both stay visible but disabled with a tooltip pointing to
+  // the ticket, per the etapa's "don't hide options silently" rule.
+  const activeTicket = currentActiveTicket;
+  const pendingUnavailable =
+    resolveStatusChangeAction(activeTicket, "pending").kind === "unavailable";
+  const unassignUnavailable =
+    resolveAssignChangeAction(activeTicket, null, user?.id ?? null).kind ===
+    "unavailable";
 
   return (
     // `min-w-0` is load-bearing: the page already puts min-w-0 on the
@@ -1167,15 +1361,20 @@ export function MessageThread({
               align="end"
               className="border-border bg-popover"
             >
-              {STATUS_OPTIONS.map((opt) => (
-                <DropdownMenuItem
-                  key={opt.value}
-                  onClick={() => handleStatusChange(opt.value)}
-                  className={cn("text-sm", opt.color)}
-                >
-                  {t(`status${opt.label}`)}
-                </DropdownMenuItem>
-              ))}
+              {STATUS_OPTIONS.map((opt) => {
+                const disabled = opt.value === "pending" && pendingUnavailable;
+                return (
+                  <DropdownMenuItem
+                    key={opt.value}
+                    onClick={() => handleStatusChange(opt.value)}
+                    disabled={disabled}
+                    title={disabled ? t("ticketActionUnavailable") : undefined}
+                    className={cn("text-sm", opt.color)}
+                  >
+                    {t(`status${opt.label}`)}
+                  </DropdownMenuItem>
+                );
+              })}
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -1235,6 +1434,8 @@ export function MessageThread({
                   <DropdownMenuSeparator className="bg-border" />
                   <DropdownMenuItem
                     onClick={() => handleAssignChange(null)}
+                    disabled={unassignUnavailable}
+                    title={unassignUnavailable ? t("ticketActionUnavailable") : undefined}
                     className="text-sm text-muted-foreground"
                   >
                     {t("unassign")}
