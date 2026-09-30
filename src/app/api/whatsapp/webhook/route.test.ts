@@ -25,10 +25,28 @@ const state = vi.hoisted(() => ({
 }))
 
 const mocks = vi.hoisted(() => ({
+  afterCallback: null as (() => Promise<void>) | null,
   runAutomationsForTrigger: vi.fn(async () => {}),
   dispatchInboundToFlows: vi.fn(async () => ({ consumed: false, outcome: 'no_match' as const })),
   dispatchInboundToAiReply: vi.fn(async () => {}),
   dispatchWebhookEvent: vi.fn(async () => {}),
+}))
+
+vi.mock('next/server', () => ({
+  NextResponse: {
+    json: (body: unknown, init?: ResponseInit) =>
+      new Response(JSON.stringify(body), {
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...init?.headers },
+      }),
+  },
+  after: (callback: () => Promise<void>) => {
+    mocks.afterCallback = callback
+  },
+}))
+
+vi.mock('@/lib/whatsapp/webhook-signature', () => ({
+  verifyMetaWebhookSignature: () => true,
 }))
 
 vi.mock('@supabase/supabase-js', () => ({
@@ -144,7 +162,7 @@ vi.mock('@/lib/webhooks/deliver', () => ({
   dispatchWebhookEvent: mocks.dispatchWebhookEvent,
 }))
 
-import { processWebhook } from './route'
+import { POST } from './route'
 import { encrypt } from '@/lib/whatsapp/encryption'
 
 function inboundBody() {
@@ -174,6 +192,32 @@ function inboundBody() {
       },
     ],
   }
+}
+
+async function processWebhook(body: ReturnType<typeof inboundBody>) {
+  mocks.afterCallback = null
+
+  const request = new Request('http://localhost/api/whatsapp/webhook', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-hub-signature-256': 'test-signature',
+    },
+    body: JSON.stringify(body),
+  })
+
+  const response = await POST(request)
+
+  if (response.status !== 200) {
+    throw new Error(`Webhook POST returned ${response.status}`)
+  }
+
+  if (!mocks.afterCallback) {
+    throw new Error('Webhook POST did not register an after() callback')
+  }
+
+  const callback = mocks.afterCallback as () => Promise<void>
+  await callback()
 }
 
 beforeEach(() => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveSelectedLabel } from "@base-ui/react/internals/resolveValueLabel";
 
-import { buildPrioritySelectItems } from "./page";
+import { buildPrioritySelectItems } from "./priority-select-items";
 import { buildQueueSelectItems } from "@/components/flows/forms/node-config-form";
 import { buildMemberSelectItems } from "@/lib/account/members";
 

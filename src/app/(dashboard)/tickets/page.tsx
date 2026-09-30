@@ -43,26 +43,7 @@ import {
 import { buildMemberSelectItems, fetchAccountMembers, memberLabel } from '@/lib/account/members';
 import { buildQueueSelectItems } from '@/components/flows/forms/node-config-form';
 import type { AccountMember, Queue, Ticket, TicketPriority } from '@/types';
-
-/**
- * `{value, label}` pairs for a priority Select's `items` prop — same
- * "closed trigger needs items, not just SelectItem children" reasoning
- * documented on buildMemberSelectItems (src/lib/account/members.ts).
- * `t` is whatever translation function the caller already has (this
- * file uses it from two different namespaces — the filter bar's
- * `Tickets` and the new-ticket dialog's `Tickets.newTicketDialog` —
- * each keeps its own existing wording, this only wires it into `items`).
- */
-export function buildPrioritySelectItems(
-  t: (key: 'priorityLow' | 'priorityNormal' | 'priorityHigh' | 'priorityUrgent') => string,
-): { value: string; label: string }[] {
-  return [
-    { value: 'low', label: t('priorityLow') },
-    { value: 'normal', label: t('priorityNormal') },
-    { value: 'high', label: t('priorityHigh') },
-    { value: 'urgent', label: t('priorityUrgent') },
-  ];
-}
+import { buildPrioritySelectItems } from './priority-select-items';
 
 const PRIORITY_BADGE: Record<TicketPriority, string> = {
   low: 'bg-slate-500/15 text-slate-600 dark:text-slate-400',

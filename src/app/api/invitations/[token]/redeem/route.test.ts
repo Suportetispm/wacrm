@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getClientIp } from "./route";
+import { getClientIp } from "@/lib/auth/client-ip";
 
 function requestWith(headers: Record<string, string>): Request {
   return new Request("http://localhost/api/invitations/tok/redeem", {

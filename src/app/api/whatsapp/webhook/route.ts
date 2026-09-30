@@ -217,11 +217,10 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
-// Exported (in addition to the route handlers below) so the inactive-
-// account gate can be unit-tested directly — Next.js only treats
-// GET/POST/etc. and a handful of named config exports specially; an
-// extra export like this is simply ignored by the framework.
-export async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
+// Kept private because Next.js App Router route modules only allow
+// supported route-handler/config exports. Tests exercise this processing
+// through POST and the registered after() callback.
+async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
   if (!body.entry) return
 
   for (const entry of body.entry) {

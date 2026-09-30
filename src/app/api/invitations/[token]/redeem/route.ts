@@ -21,38 +21,13 @@ import { NextResponse } from "next/server";
 import type { PostgrestError } from "@supabase/supabase-js";
 
 import { hashInviteToken } from "@/lib/auth/invitations";
+import { getClientIp } from "@/lib/auth/client-ip";
 import {
   checkRateLimit,
   rateLimitResponse,
   RATE_LIMITS,
 } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
-
-/**
- * Best-effort client IP, hardened against malformed proxy headers.
- * `x-forwarded-for` can legally contain empty entries from a mangling
- * proxy (e.g. a leading comma: ",1.2.3.4") — naively taking `[0]`
- * before trimming would return `""`, which upstream turns into a
- * shared rate-limit bucket key like `redeem:` for every client that
- * triggers it. Every candidate is trimmed and empty ones are skipped;
- * only a genuinely non-empty value is ever returned, else "unknown".
- */
-export function getClientIp(request: Request): string {
-  const xff = request.headers.get("x-forwarded-for");
-  if (xff) {
-    const firstNonEmpty = xff
-      .split(",")
-      .map((part) => part.trim())
-      .find((part) => part.length > 0);
-    if (firstNonEmpty) return firstNonEmpty;
-  }
-  const xri = request.headers.get("x-real-ip");
-  if (xri) {
-    const trimmed = xri.trim();
-    if (trimmed) return trimmed;
-  }
-  return "unknown";
-}
 
 function rpcErrorToResponse(err: PostgrestError): NextResponse {
   if (err.code === "42501") {

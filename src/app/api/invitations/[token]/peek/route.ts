@@ -24,48 +24,13 @@
 import { NextResponse } from "next/server";
 
 import { hashInviteToken } from "@/lib/auth/invitations";
+import { getClientIp } from "@/lib/auth/client-ip";
 import {
   checkRateLimit,
   rateLimitResponse,
   RATE_LIMITS,
 } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
-
-/**
- * Best-effort client IP. The `x-forwarded-for` header is what
- * every reverse proxy (Vercel, Hostinger, Cloudflare) sets when
- * forwarding a request; we take the leftmost entry, which is
- * the original client.
- *
- * Falls back to a constant when no proxy is in front (e.g.
- * `localhost` during development) so rate-limit keys still
- * exist — the limit then effectively applies "globally," which
- * is fine for dev.
- *
- * Hardened against malformed headers: `x-forwarded-for` can legally
- * contain empty entries from a mangling proxy (e.g. a leading comma,
- * ",1.2.3.4") — naively taking `[0]` before trimming would return
- * `""`, which upstream turns into a shared rate-limit bucket key like
- * `peek:` for every client that triggers it. Every candidate is
- * trimmed and empty ones are skipped; only a genuinely non-empty
- * value is ever returned, else "unknown".
- */
-export function getClientIp(request: Request): string {
-  const xff = request.headers.get("x-forwarded-for");
-  if (xff) {
-    const firstNonEmpty = xff
-      .split(",")
-      .map((part) => part.trim())
-      .find((part) => part.length > 0);
-    if (firstNonEmpty) return firstNonEmpty;
-  }
-  const xri = request.headers.get("x-real-ip");
-  if (xri) {
-    const trimmed = xri.trim();
-    if (trimmed) return trimmed;
-  }
-  return "unknown";
-}
 
 export async function GET(
   request: Request,
