@@ -74,6 +74,10 @@ export async function middleware(request: NextRequest) {
   if (!user && protectedPaths.some(path => request.nextUrl.pathname.startsWith(path))) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
+    // `_rsc` is Next's internal cache-busting key for RSC fetches of the
+    // ORIGINAL route — it must never leak into the /login Location.
+    // Only that key is dropped; any other query param is kept as before.
+    url.searchParams.delete('_rsc')
     return withRefreshedCookies(NextResponse.redirect(url))
   }
 

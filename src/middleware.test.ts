@@ -135,6 +135,54 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
   });
 });
 
+describe("middleware — unauth redirect to /login never carries `_rsc`", () => {
+  // `_rsc` is Next's per-request RSC cache-busting key. Propagating it
+  // into the /login Location produced cacheable redirects pointing at
+  // `/login?_rsc=…` — the URL seen when a raw Flight payload rendered
+  // as the page. Only `_rsc` is stripped; other params stay as before.
+
+  it("drops `_rsc` from the Location of an RSC request redirected to /login", async () => {
+    mockUser = null;
+    const res = await middleware(
+      new NextRequest("https://app.test/inbox?_rsc=abc123", {
+        headers: { RSC: "1" },
+      }),
+    );
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.has("_rsc")).toBe(false);
+    expect(location.search).toBe("");
+  });
+
+  it("keeps every other query param while dropping `_rsc`", async () => {
+    mockUser = null;
+    const res = await middleware(
+      new NextRequest("https://app.test/inbox?c=conv-1&_rsc=abc123&tab=open"),
+    );
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.has("_rsc")).toBe(false);
+    expect(location.searchParams.get("c")).toBe("conv-1");
+    expect(location.searchParams.get("tab")).toBe("open");
+  });
+
+  it("still preserves the query on a normal (non-RSC) redirect to /login", async () => {
+    mockUser = null;
+    const res = await middleware(
+      new NextRequest("https://app.test/settings?tab=billing"),
+    );
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.pathname).toBe("/login");
+    expect(location.search).toBe("?tab=billing");
+  });
+});
+
 describe("middleware — password-recovery routes are public and loop-free", () => {
   // /auth/callback, /forgot-password, and /reset-password are none of
   // them in `protectedPaths`, and none of them (besides
