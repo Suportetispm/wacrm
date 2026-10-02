@@ -23,6 +23,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 export const ACCOUNT_FEATURE_KEYS = [
   'multi_connection_enabled',
   'business_units_enabled',
+  // 083_inbox_visibility_mode_by_account.sql — true = Inbox account-wide;
+  // ausente/false = Inbox segmentada por Setor (default). A decisão em
+  // si é da RLS de conversations (is_account_feature_enabled no banco).
+  'inbox_account_wide',
 ] as const
 
 export type AccountFeatureKey = (typeof ACCOUNT_FEATURE_KEYS)[number]

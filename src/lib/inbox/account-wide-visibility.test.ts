@@ -13,6 +13,12 @@ import type { Conversation } from "@/types";
  * exactly what the database ends up with. The behavioral proof against a
  * real database (scenarios A–H, with impersonated JWTs) lives in
  * supabase/validation/082_inbox_account_wide_visibility_check.sql.
+ *
+ * Since migration 083 the EFFECTIVE conversations_select/_update are the
+ * hybrid ones (account-wide only where the `inbox_account_wide` flag is
+ * on) — covered by ./inbox-visibility-mode.test.ts. The two describes
+ * below that pin 082's exact policy text therefore read 082's own
+ * definition, which is still the rule 083 applies to flagged accounts.
  */
 
 const MIGRATIONS_DIR = join(process.cwd(), "supabase", "migrations");
@@ -53,13 +59,13 @@ function migrationFiles(): string[] {
 }
 
 /** Effective policy per `${table}.${policy}` after replaying every migration in order. */
-function effectivePolicies(): Map<string, PolicyDef> {
+function effectivePolicies(files: string[] = migrationFiles()): Map<string, PolicyDef> {
   const policies = new Map<string, PolicyDef>();
   // CREATE and DROP replayed in source order — 017 drops 001's legacy
   // "Users can manage own conversations", 075 drops conversations_delete.
   const stmtRe =
     /(create|drop)\s+policy\s+(?:if\s+exists\s+)?(?:"([^"]+)"|(\w+))\s+on\s+(?:public\.)?(\w+)([\s\S]*?);/gi;
-  for (const file of migrationFiles()) {
+  for (const file of files) {
     const sql = stripSqlComments(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
     for (const m of sql.matchAll(stmtRe)) {
       const key = `${m[4].toLowerCase()}.${(m[2] ?? m[3]).toLowerCase()}`;
@@ -79,12 +85,15 @@ function policy(key: string): PolicyDef {
   return def;
 }
 
-describe("082 — conversations_select is account-wide", () => {
-  const select = policy("conversations.conversations_select");
+/** Policy exactly as migration 082 itself defines it (superseded as the effective one by 083). */
+function policy082(key: string): PolicyDef {
+  const def = effectivePolicies([MIGRATION_082]).get(key);
+  if (!def) throw new Error(`policy ${key} not found in ${MIGRATION_082}`);
+  return def;
+}
 
-  it("is defined last by migration 082", () => {
-    expect(select.file).toBe(MIGRATION_082);
-  });
+describe("082 — conversations_select is account-wide", () => {
+  const select = policy082("conversations.conversations_select");
 
   it("only requires active membership of the conversation's own account", () => {
     expect(clause(select.body, "using")).toBe("public.is_account_member(account_id)");
@@ -99,11 +108,7 @@ describe("082 — conversations_select is account-wide", () => {
 });
 
 describe("082 — conversations_update follows the same scope", () => {
-  const update = policy("conversations.conversations_update");
-
-  it("is defined last by migration 082", () => {
-    expect(update.file).toBe(MIGRATION_082);
-  });
+  const update = policy082("conversations.conversations_update");
 
   it("USING = agent+ of the same account, without queue/assignee gating", () => {
     expect(clause(update.body, "using")).toBe("public.is_account_member(account_id, 'agent')");

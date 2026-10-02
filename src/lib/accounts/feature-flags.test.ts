@@ -33,6 +33,7 @@ describe('isAccountFeatureKey', () => {
   it('accepts only the known catalog keys', () => {
     expect(isAccountFeatureKey('multi_connection_enabled')).toBe(true)
     expect(isAccountFeatureKey('business_units_enabled')).toBe(true)
+    expect(isAccountFeatureKey('inbox_account_wide')).toBe(true)
     expect(isAccountFeatureKey('anything_else')).toBe(false)
     expect(isAccountFeatureKey(undefined)).toBe(false)
   })
@@ -76,6 +77,7 @@ describe('getAccountFeatureFlags', () => {
     expect(result).toEqual({
       multi_connection_enabled: false,
       business_units_enabled: false,
+      inbox_account_wide: false,
     })
   })
 
@@ -99,6 +101,7 @@ describe('getAccountFeatureFlags', () => {
     expect(result).toEqual({
       multi_connection_enabled: false,
       business_units_enabled: false,
+      inbox_account_wide: false,
     })
   })
 
@@ -108,6 +111,7 @@ describe('getAccountFeatureFlags', () => {
     expect(result).toEqual({
       multi_connection_enabled: false,
       business_units_enabled: false,
+      inbox_account_wide: false,
     })
   })
 })
