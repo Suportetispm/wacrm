@@ -4,6 +4,8 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { verifyUazapiWebhookToken } from '@/lib/whatsapp/uazapi-webhook-auth'
+// TEMPORARY — avatar discovery (see maybeRunAvatarDiscovery).
+import { runAvatarDiscovery, shouldRunAvatarDiscovery } from '@/lib/whatsapp/uazapi-avatar-discovery'
 import { parseInboundAudioMessage } from '@/lib/whatsapp/uazapi-webhook-audio-parser'
 import { persistInboundAudioMessage } from '@/lib/whatsapp/uazapi-webhook-audio-persist'
 import { parseInboundDocumentMessage } from '@/lib/whatsapp/uazapi-webhook-document-parser'
@@ -278,6 +280,11 @@ export async function POST(
       }
     }
 
+    // TEMPORARY — avatar discovery (UAZAPI_AVATAR_DISCOVERY=1). Never affects the response.
+    if (documentResult.outcome === 'persisted') {
+      await maybeRunAvatarDiscovery(parsed, parsedDocument.chatId, config.id, instanceId)
+    }
+
     return NextResponse.json({ status: documentResult.outcome, type: 'document' }, { status: 200 })
   }
 
@@ -350,6 +357,11 @@ export async function POST(
       }
     }
 
+    // TEMPORARY — avatar discovery (UAZAPI_AVATAR_DISCOVERY=1). Never affects the response.
+    if (imageResult.outcome === 'persisted') {
+      await maybeRunAvatarDiscovery(parsed, parsedImage.chatId, config.id, instanceId)
+    }
+
     return NextResponse.json({ status: imageResult.outcome, type: 'image' }, { status: 200 })
   }
 
@@ -396,6 +408,11 @@ export async function POST(
     })
 
     // Deliberately NO Flow dispatch for audio — see the header comment.
+    // TEMPORARY — avatar discovery (UAZAPI_AVATAR_DISCOVERY=1). Never affects the response.
+    if (audioResult.outcome === 'persisted') {
+      await maybeRunAvatarDiscovery(parsed, parsedAudio.chatId, config.id, instanceId)
+    }
+
     return NextResponse.json({ status: audioResult.outcome, type: 'audio' }, { status: 200 })
   }
 
@@ -418,6 +435,38 @@ export async function POST(
 }
 
 /** Fetches and decrypts the instance's UAZAPI token — shared by the document, image and audio persistence paths (all need to call `POST /message/download`). Throws on any failure; callers map that to a 503 without leaking DB/decrypt detail. */
+/**
+ * TEMPORARY — avatar discovery wrapper. Checks the gate first (so a
+ * disabled flag costs nothing), then resolves the token of the SAME
+ * HMAC-validated connection and runs the single controlled call.
+ * Swallows every error — the webhook response never depends on it.
+ */
+async function maybeRunAvatarDiscovery(
+  payload: unknown,
+  chatId: string,
+  configId: string,
+  instanceId: string,
+): Promise<void> {
+  try {
+    if (!shouldRunAvatarDiscovery(payload, chatId)) return
+    let token: string
+    try {
+      token = await resolveInstanceToken(configId)
+    } catch {
+      console.log('[uazapi/avatar-discovery]', JSON.stringify({ code: 'token_unavailable' }))
+      return
+    }
+    await runAvatarDiscovery({
+      payload,
+      chatId,
+      instanceToken: token,
+      maskedInstanceId: maskInstanceId(instanceId),
+    })
+  } catch {
+    // Diagnostic only — never propagates.
+  }
+}
+
 async function resolveInstanceToken(configId: string): Promise<string> {
   const { data: tokenRow, error: tokenError } = await supabaseAdmin()
     .from('whatsapp_config')

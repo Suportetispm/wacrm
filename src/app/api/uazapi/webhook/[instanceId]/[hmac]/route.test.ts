@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   persistInboundImageMessage: vi.fn(),
   parseInboundAudioMessage: vi.fn(),
   persistInboundAudioMessage: vi.fn(),
+  // TEMPORARY — avatar discovery.
+  shouldRunAvatarDiscovery: vi.fn(() => false),
+  runAvatarDiscovery: vi.fn(async () => {}),
   decrypt: vi.fn(),
   isAccountActive: vi.fn(),
   dispatchInboundToFlows: vi.fn(async () => ({ consumed: false, outcome: 'no_match' as const })),
@@ -67,6 +70,12 @@ vi.mock('@/lib/whatsapp/uazapi-webhook-audio-parser', () => ({
 
 vi.mock('@/lib/whatsapp/uazapi-webhook-audio-persist', () => ({
   persistInboundAudioMessage: mocks.persistInboundAudioMessage,
+}))
+
+// TEMPORARY — avatar discovery (module unit-tested on its own).
+vi.mock('@/lib/whatsapp/uazapi-avatar-discovery', () => ({
+  shouldRunAvatarDiscovery: mocks.shouldRunAvatarDiscovery,
+  runAvatarDiscovery: mocks.runAvatarDiscovery,
 }))
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
@@ -165,6 +174,11 @@ beforeEach(() => {
   mocks.parseInboundDocumentMessage.mockReturnValue(null)
   mocks.parseInboundImageMessage.mockReturnValue(null)
   mocks.parseInboundAudioMessage.mockReturnValue(null)
+  // TEMPORARY — avatar discovery: off by default in every test.
+  mocks.shouldRunAvatarDiscovery.mockReset()
+  mocks.shouldRunAvatarDiscovery.mockReturnValue(false)
+  mocks.runAvatarDiscovery.mockReset()
+  mocks.runAvatarDiscovery.mockResolvedValue(undefined)
   mocks.decrypt.mockReturnValue('fixture-decrypted-token')
   mocks.isAccountActive.mockReset()
   mocks.isAccountActive.mockResolvedValue(true)
@@ -1092,5 +1106,108 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — audio / voice-note pa
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ status: 'ignored' })
     expect(mocks.persistInboundAudioMessage).not.toHaveBeenCalled()
+  })
+})
+
+// TEMPORARY — avatar discovery: route wiring only (the module's own
+// behavior is tested in uazapi-avatar-discovery.test.ts). Remove
+// together with the route wiring and the module.
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — TEMPORARY avatar discovery wiring', () => {
+  function mediaRequest() {
+    return request({ EventType: 'messages', message: { fromMe: false, isGroup: false } })
+  }
+
+  beforeEach(() => {
+    mocks.parseInboundTextMessage.mockReturnValue(null)
+  })
+
+  it('gate closed (default): never resolves a token or calls the discovery', async () => {
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
+
+    const res = await POST(mediaRequest(), params)
+
+    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
+    expect(mocks.runAvatarDiscovery).not.toHaveBeenCalled()
+  })
+
+  it('audio persisted + gate open: runs once with parsed.chatId and the decrypted token of THIS connection; response unchanged', async () => {
+    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
+
+    const res = await POST(mediaRequest(), params)
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
+    expect(mocks.shouldRunAvatarDiscovery).toHaveBeenCalledWith(expect.anything(), PARSED_AUDIO_FIXTURE.chatId)
+    expect(mocks.runAvatarDiscovery).toHaveBeenCalledTimes(1)
+    expect(mocks.runAvatarDiscovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: PARSED_AUDIO_FIXTURE.chatId,
+        instanceToken: 'fixture-decrypted-token',
+        maskedInstanceId: 'fix…id',
+      }),
+    )
+  })
+
+  it('image and document persisted + gate open: also wired, with their own parsed.chatId', async () => {
+    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v', routingState: null })
+    await POST(mediaRequest(), params)
+    expect(mocks.runAvatarDiscovery).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: PARSED_IMAGE_FIXTURE.chatId }))
+
+    mocks.parseInboundImageMessage.mockReturnValue(null)
+    mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
+    mocks.persistInboundDocumentMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v', routingState: null })
+    await POST(mediaRequest(), params)
+    expect(mocks.runAvatarDiscovery).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: PARSED_DOCUMENT_FIXTURE.chatId }))
+  })
+
+  it('only after a real persistence: duplicate or error outcomes never run it', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'duplicate', contactId: 'c', conversationId: 'v' })
+    await POST(mediaRequest(), params)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'error', code: 'download_failed' })
+    const res = await POST(mediaRequest(), params)
+
+    expect(res.status).toBe(503)
+    expect(mocks.runAvatarDiscovery).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('a discovery failure (429/5xx/throw) never changes the webhook response', async () => {
+    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
+    mocks.runAvatarDiscovery.mockRejectedValue(new Error('boom'))
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
+
+    const res = await POST(mediaRequest(), params)
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
+  })
+
+  it('token unavailable: logs only a fixed code, discovery not run, response unchanged', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockImplementation(async () => {
+      // The persist step consumed the token; the discovery's own lookup now fails.
+      tokenLookupResult = { data: null, error: null }
+      return { outcome: 'persisted', contactId: 'c', conversationId: 'v' }
+    })
+
+    const res = await POST(mediaRequest(), params)
+
+    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
+    expect(mocks.runAvatarDiscovery).not.toHaveBeenCalled()
+    const line = logSpy.mock.calls.find((a) => a[0] === '[uazapi/avatar-discovery]')
+    expect(line?.[1]).toBe(JSON.stringify({ code: 'token_unavailable' }))
+    logSpy.mockRestore()
   })
 })
