@@ -28,6 +28,17 @@ import { wasSkippedForUnresolvedLid } from '@/lib/whatsapp/uazapi-webhook-identi
 // parseInboundImageMessage all return null for anything outside their
 // own scope, and the route acks 200 {status:'ignored'} without
 // persisting anything.
+//
+// TEMPORARY — audio shape discovery (see `logIgnoredMediaShape`). Off
+// unless UAZAPI_AUDIO_SHAPE_DISCOVERY=1. Logs the STRUCTURE (key names,
+// value types) of `message`/`message.content` only — never the outer
+// envelope — for at most one ignored media-like event per process, so
+// the real INBOUND voice-note payload can be mapped before writing its
+// parser (receive path only; outbound audio is untouched) —
+// never values, except a short allowlist of non-personal enum/number
+// fields. Same pattern as the removed document/image discovery
+// diagnostics (git history: b65e87a, 7367867). Remove once the audio
+// shape is confirmed.
 // ============================================================
 
 // 256 KB is generous for a single WhatsApp message event's metadata
@@ -40,6 +51,135 @@ const HMAC_HEX_PATTERN = /^[0-9a-f]{64}$/i
 function maskInstanceId(id: string): string {
   if (id.length <= 6) return '***'
   return `${id.slice(0, 3)}…${id.slice(-2)}`
+}
+
+// ------------------------------------------------------------
+// TEMPORARY — audio shape discovery. Self-contained on purpose (no
+// imports from the parser modules it investigates around).
+// ------------------------------------------------------------
+
+const SHAPE_LOG_PREFIX = '[uazapi/webhook:audio-shape]'
+const SHAPE_MAX_DEPTH = 4
+const SHAPE_MAX_KEYS_PER_OBJECT = 40
+const SHAPE_MAX_NODES = 300
+
+/** Module-level one-shot: at most one capture per server process. */
+let audioShapeCaptured = false
+
+function isShapeRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Key names are structure, not data — but a key that looks like a JID
+ *  or phone (an `@`, or a long digit run) is redacted anyway. */
+function safeKeyName(key: string): string {
+  if (key.length > 64 || key.includes('@') || /\d{6,}/.test(key)) return '<redacted-key>'
+  return key
+}
+
+/** Type-only tree: objects → { key: shape }, arrays → `array(n)` plus a
+ *  sample of the first item's shape, primitives → their type name.
+ *  Never a value. Bounded by depth, keys per object and a node budget. */
+function describeShape(value: unknown, depth: number, budget: { nodes: number }): unknown {
+  budget.nodes -= 1
+  if (value === null) return 'null'
+  if (Array.isArray(value)) {
+    if (depth >= SHAPE_MAX_DEPTH || budget.nodes <= 0 || value.length === 0) {
+      return `array(${value.length})`
+    }
+    return { [`array(${value.length})`]: describeShape(value[0], depth + 1, budget) }
+  }
+  if (isShapeRecord(value)) {
+    const keys = Object.keys(value).sort()
+    if (depth >= SHAPE_MAX_DEPTH || budget.nodes <= 0) return `object(${keys.length} keys, truncated)`
+    const out: Record<string, unknown> = {}
+    for (const key of keys.slice(0, SHAPE_MAX_KEYS_PER_OBJECT)) {
+      if (budget.nodes <= 0) {
+        out['<truncated>'] = true
+        break
+      }
+      out[safeKeyName(key)] = describeShape(value[key], depth + 1, budget)
+    }
+    if (keys.length > SHAPE_MAX_KEYS_PER_OBJECT) out['<more-keys>'] = keys.length - SHAPE_MAX_KEYS_PER_OBJECT
+    return out
+  }
+  return typeof value
+}
+
+/** Allowlisted enum-like string: short, identifier/MIME characters only. */
+function allowedEnum(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const v = value.trim()
+  if (v.length === 0 || v.length > 64) return undefined
+  return /^[A-Za-z0-9_.+/-]+$/.test(v) && !/\d{6,}/.test(v) ? v : '<rejected>'
+}
+
+/** MIME type, optionally with parameters (e.g. `audio/ogg; codecs=opus`). */
+function allowedMimeType(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const v = value.trim()
+  if (v.length === 0 || v.length > 100) return undefined
+  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+(\s*;\s*[a-z0-9.+-]+=[a-z0-9.+"-]+)*$/i.test(v) ? v : '<rejected>'
+}
+
+function allowedBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function allowedNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+const AUDIO_HINT = /audio|ptt|voice/i
+const MEDIA_HINT = /audio|ptt|voice|media|image|video|document|sticker/i
+
+/**
+ * Logs the sanitized structure of ONE ignored media-like `messages`
+ * event per process, only when UAZAPI_AUDIO_SHAPE_DISCOVERY=1. Match is
+ * deliberately broad (any structural media hint, not just "audio" in
+ * messageType) to avoid a false negative on an unexpected audio type
+ * name; `match` says which rule fired. Never throws into the caller.
+ */
+function logIgnoredMediaShape(parsed: unknown, instanceId: string): void {
+  if (process.env.UAZAPI_AUDIO_SHAPE_DISCOVERY !== '1') return
+  if (audioShapeCaptured) return
+  if (!isShapeRecord(parsed) || parsed.EventType !== 'messages') return
+  const message = parsed.message
+  if (!isShapeRecord(message)) return
+  const content = isShapeRecord(message.content) ? message.content : undefined
+
+  const messageType = typeof message.messageType === 'string' ? message.messageType : ''
+  const mediaType = typeof message.mediaType === 'string' ? message.mediaType : ''
+  const mimetype = typeof content?.mimetype === 'string' ? content.mimetype : ''
+
+  const audioHint =
+    AUDIO_HINT.test(messageType) || AUDIO_HINT.test(mediaType) || mimetype.toLowerCase().startsWith('audio/')
+  const mediaHint =
+    message.type === 'media' || mediaType.length > 0 || mimetype.length > 0 || MEDIA_HINT.test(messageType)
+  if (!audioHint && !mediaHint) return
+
+  audioShapeCaptured = true
+  const budget = { nodes: SHAPE_MAX_NODES }
+  const summary = {
+    instanceId: maskInstanceId(instanceId),
+    match: audioHint ? 'audio_hint' : 'media_fallback',
+    allowedValues: {
+      messageType: allowedEnum(message.messageType),
+      type: allowedEnum(message.type),
+      mediaType: allowedEnum(message.mediaType),
+      mimetype: allowedMimeType(content?.mimetype),
+      PTT: allowedBoolean(content?.PTT),
+      ptt: allowedBoolean(content?.ptt),
+      seconds: allowedNumber(content?.seconds),
+      duration: allowedNumber(content?.duration),
+    },
+    // `message` (incl. `message.content`) only — never the outer
+    // envelope (token, owner, BaseUrl, chat, chatSource, instanceName).
+    messageShape: describeShape(message, 0, budget),
+  }
+  // JSON string, not an object — console.log's inspect depth (2) would
+  // otherwise collapse the nested shape into `[Object]`.
+  console.log(SHAPE_LOG_PREFIX, JSON.stringify(summary))
 }
 
 export async function POST(
@@ -360,6 +500,13 @@ export async function POST(
       instanceId: maskInstanceId(instanceId),
       lid_detected: true,
     })
+  }
+
+  // TEMPORARY — audio shape discovery (off by default; see helper above).
+  try {
+    logIgnoredMediaShape(parsed, instanceId)
+  } catch {
+    // Diagnostic only — must never affect the response below.
   }
 
   console.log('[uazapi/webhook:persist] ignored', {
