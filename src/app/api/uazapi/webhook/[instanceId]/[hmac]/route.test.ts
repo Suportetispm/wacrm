@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   persistInboundDocumentMessage: vi.fn(),
   parseInboundImageMessage: vi.fn(),
   persistInboundImageMessage: vi.fn(),
+  // TEMPORARY — audio download discovery.
+  shouldRunAudioDownloadDiscovery: vi.fn(() => false),
+  runAudioDownloadDiscovery: vi.fn(async () => {}),
   decrypt: vi.fn(),
   isAccountActive: vi.fn(),
   dispatchInboundToFlows: vi.fn(async () => ({ consumed: false, outcome: 'no_match' as const })),
@@ -57,6 +60,12 @@ vi.mock('@/lib/whatsapp/uazapi-webhook-image-parser', () => ({
 
 vi.mock('@/lib/whatsapp/uazapi-webhook-image-persist', () => ({
   persistInboundImageMessage: mocks.persistInboundImageMessage,
+}))
+
+// TEMPORARY — audio download discovery (module unit-tested on its own).
+vi.mock('@/lib/whatsapp/uazapi-audio-download-discovery', () => ({
+  shouldRunAudioDownloadDiscovery: mocks.shouldRunAudioDownloadDiscovery,
+  runAudioDownloadDiscovery: mocks.runAudioDownloadDiscovery,
 }))
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
@@ -152,6 +161,11 @@ beforeEach(() => {
   mocks.verifyUazapiWebhookToken.mockReturnValue(true)
   mocks.parseInboundDocumentMessage.mockReturnValue(null)
   mocks.parseInboundImageMessage.mockReturnValue(null)
+  // TEMPORARY — audio download discovery: off by default in every test.
+  mocks.shouldRunAudioDownloadDiscovery.mockReset()
+  mocks.shouldRunAudioDownloadDiscovery.mockReturnValue(false)
+  mocks.runAudioDownloadDiscovery.mockReset()
+  mocks.runAudioDownloadDiscovery.mockResolvedValue(undefined)
   mocks.decrypt.mockReturnValue('fixture-decrypted-token')
   mocks.isAccountActive.mockReset()
   mocks.isAccountActive.mockResolvedValue(true)
@@ -1203,5 +1217,60 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — temporary audio shape
     expect(log.allowedValues.seconds).toBeUndefined()
     const serialized = JSON.stringify(log)
     for (const marker of SENSITIVE_MARKERS) expect(serialized).not.toContain(marker)
+  })
+})
+
+// TEMPORARY — audio download discovery: route wiring only (the module's
+// own behavior is tested in uazapi-audio-download-discovery.test.ts).
+// Remove together with the route block and the module.
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — TEMPORARY audio download discovery wiring', () => {
+  function voiceNoteRequest() {
+    return request({ EventType: 'messages', message: { messageType: 'AudioMessage', type: 'media', mediaType: 'ptt' } })
+  }
+
+  beforeEach(() => {
+    mocks.parseInboundTextMessage.mockReturnValue(null)
+  })
+
+  it('when the gate says run: runs discovery with the decrypted token + masked id, returns 200, and never persists or dispatches', async () => {
+    mocks.shouldRunAudioDownloadDiscovery.mockReturnValue(true)
+
+    const res = await POST(voiceNoteRequest(), params)
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: 'ignored' })
+    expect(mocks.runAudioDownloadDiscovery).toHaveBeenCalledTimes(1)
+    expect(mocks.runAudioDownloadDiscovery).toHaveBeenCalledWith(
+      expect.objectContaining({ instanceToken: 'fixture-decrypted-token', maskedInstanceId: 'fix…id' }),
+    )
+    // No persistence path and no Flow. The admin-client mock only models
+    // `whatsapp_config` reads (any other table, rpc or storage would
+    // throw) — so a 200 here also proves no other DB access happened.
+    expect(mocks.persistInboundTextMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
+    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
+    expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+
+  it('token unavailable: still 200 with only a fixed code, discovery not run', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    tokenLookupResult = { data: null, error: null }
+    mocks.shouldRunAudioDownloadDiscovery.mockReturnValue(true)
+
+    const res = await POST(voiceNoteRequest(), params)
+
+    expect(res.status).toBe(200)
+    expect(mocks.runAudioDownloadDiscovery).not.toHaveBeenCalled()
+    const line = logSpy.mock.calls.find((a) => a[0] === '[uazapi/audio-download-shape]')
+    expect(line?.[1]).toBe(JSON.stringify({ code: 'token_unavailable' }))
+    logSpy.mockRestore()
+  })
+
+  it('when the gate says no (default): unchanged — an audio event is still acked 200 {status: "ignored"} without discovery', async () => {
+    const res = await POST(voiceNoteRequest(), params)
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: 'ignored' })
+    expect(mocks.runAudioDownloadDiscovery).not.toHaveBeenCalled()
   })
 })

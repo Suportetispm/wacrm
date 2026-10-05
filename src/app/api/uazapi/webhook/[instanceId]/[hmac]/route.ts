@@ -4,6 +4,11 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { verifyUazapiWebhookToken } from '@/lib/whatsapp/uazapi-webhook-auth'
+// TEMPORARY — audio download discovery (see the block before the audio path).
+import {
+  runAudioDownloadDiscovery,
+  shouldRunAudioDownloadDiscovery,
+} from '@/lib/whatsapp/uazapi-audio-download-discovery'
 import { parseInboundDocumentMessage } from '@/lib/whatsapp/uazapi-webhook-document-parser'
 import { persistInboundDocumentMessage } from '@/lib/whatsapp/uazapi-webhook-document-persist'
 import { parseInboundImageMessage } from '@/lib/whatsapp/uazapi-webhook-image-parser'
@@ -489,6 +494,25 @@ export async function POST(
 
     return NextResponse.json({ status: imageResult.outcome, type: 'image' }, { status: 200 })
   }
+
+  // TEMPORARY — audio download discovery (UAZAPI_AUDIO_DOWNLOAD_DISCOVERY=1).
+  // Runs BEFORE the definitive audio path and never continues into it:
+  // no contact/conversation/message/storage/RPC/Flow. Remove with
+  // src/lib/whatsapp/uazapi-audio-download-discovery.ts.
+  if (shouldRunAudioDownloadDiscovery(parsed)) {
+    try {
+      const discoveryToken = await resolveInstanceToken(config.id)
+      await runAudioDownloadDiscovery({
+        payload: parsed,
+        instanceToken: discoveryToken,
+        maskedInstanceId: maskInstanceId(instanceId),
+      })
+    } catch {
+      console.log('[uazapi/audio-download-shape]', JSON.stringify({ code: 'token_unavailable' }))
+    }
+    return NextResponse.json({ status: 'ignored' }, { status: 200 })
+  }
+  // END TEMPORARY — audio download discovery.
 
   // Distinguishes the specific, identifiable "LID only, no phone
   // could be resolved" reason from every other out-of-scope reason
