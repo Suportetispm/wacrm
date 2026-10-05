@@ -84,6 +84,16 @@ const imageMessage = {
   media_file_size: 54321,
 };
 
+const audioMessage = {
+  id: VALID_UUID,
+  conversation_id: 'conversation-1',
+  content_type: 'audio',
+  media_storage_path: 'account-1/conversation-1/hash.mp3',
+  media_file_name: 'audio.mp3',
+  media_mime_type: 'audio/mpeg',
+  media_file_size: 4096,
+};
+
 describe('GET /api/messages/[messageId]/attachment', () => {
   it('returns 401 when there is no session', async () => {
     mocks.requireRole.mockRejectedValue({ status: 401, message: 'Unauthorized' });
@@ -171,9 +181,9 @@ describe('GET /api/messages/[messageId]/attachment', () => {
     expect(mocks.createSignedUrl).not.toHaveBeenCalled();
   });
 
-  it('returns 415 for an unsupported content_type altogether (e.g. audio)', async () => {
+  it('returns 415 for an unsupported content_type altogether (e.g. video)', async () => {
     mocks.messagesMaybeSingle.mockResolvedValue({
-      data: { ...documentMessage, content_type: 'audio', media_mime_type: 'audio/ogg' },
+      data: { ...documentMessage, content_type: 'video', media_mime_type: 'video/mp4' },
       error: null,
     });
     mocks.conversationsMaybeSingle.mockResolvedValue({
@@ -184,6 +194,60 @@ describe('GET /api/messages/[messageId]/attachment', () => {
     const res = await GET(new Request('http://localhost'), params(VALID_UUID));
 
     expect(res.status).toBe(415);
+    expect(mocks.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns 415 for an audio row whose MIME is not the stored MP3 (e.g. audio/ogg)', async () => {
+    mocks.messagesMaybeSingle.mockResolvedValue({
+      data: { ...audioMessage, media_mime_type: 'audio/ogg' },
+      error: null,
+    });
+    mocks.conversationsMaybeSingle.mockResolvedValue({
+      data: { account_id: 'account-1' },
+      error: null,
+    });
+
+    const res = await GET(new Request('http://localhost'), params(VALID_UUID));
+
+    expect(res.status).toBe(415);
+    expect(mocks.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('signs a 60-second URL for an authorized inbound audio/mpeg message', async () => {
+    mocks.messagesMaybeSingle.mockResolvedValue({ data: audioMessage, error: null });
+    mocks.conversationsMaybeSingle.mockResolvedValue({
+      data: { account_id: 'account-1' },
+      error: null,
+    });
+    mocks.createSignedUrl.mockResolvedValue({
+      data: { signedUrl: 'https://storage.example/signed-audio' },
+      error: null,
+    });
+
+    const res = await GET(new Request('http://localhost'), params(VALID_UUID));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(mocks.createSignedUrl).toHaveBeenCalledWith(audioMessage.media_storage_path, 60);
+    expect(body).toEqual({
+      url: 'https://storage.example/signed-audio',
+      fileName: 'audio.mp3',
+      mimeType: 'audio/mpeg',
+      fileSize: 4096,
+    });
+    expect(JSON.stringify(body)).not.toContain('media_storage_path');
+  });
+
+  it('returns 403 for an audio message that belongs to a different account', async () => {
+    mocks.messagesMaybeSingle.mockResolvedValue({ data: audioMessage, error: null });
+    mocks.conversationsMaybeSingle.mockResolvedValue({
+      data: { account_id: 'account-2' },
+      error: null,
+    });
+
+    const res = await GET(new Request('http://localhost'), params(VALID_UUID));
+
+    expect(res.status).toBe(403);
     expect(mocks.createSignedUrl).not.toHaveBeenCalled();
   });
 

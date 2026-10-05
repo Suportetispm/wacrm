@@ -135,3 +135,67 @@ describe('MessageBubble — image attachments', () => {
     expect(html).toContain('photo unavailable');
   });
 });
+
+// Static-markup only (same caveat as above): the signed-URL fetch and
+// the swap to <audio src=signed> happen in an effect, so an inbound
+// row renders its loading state here; the real playback path needs a DOM.
+describe('MessageBubble — audio', () => {
+  const AUDIO_BASE: Message = {
+    ...BASE_MESSAGE,
+    content_type: 'audio',
+  };
+
+  it('inbound (media_storage_path): uses the private attachment flow — loading state, never the raw storage path', () => {
+    const message: Message = {
+      ...AUDIO_BASE,
+      media_storage_path: 'account-1/conversation-1/deadbeef.mp3',
+      media_file_name: 'audio.mp3',
+      media_mime_type: 'audio/mpeg',
+      media_file_size: 4096,
+      media_metadata: { voiceNote: true, durationSeconds: 3 },
+    };
+
+    const html = renderBubble(message);
+
+    expect(html).toContain('animate-spin');
+    expect(html).not.toContain('<audio');
+    expect(html).not.toContain('account-1/conversation-1/deadbeef.mp3');
+    expect(html).not.toContain('audio unavailable');
+  });
+
+  it('inbound wins over media_url when both are set (private path is authoritative)', () => {
+    const message: Message = {
+      ...AUDIO_BASE,
+      media_storage_path: 'account-1/conversation-1/deadbeef.mp3',
+      media_url: 'https://public.example/should-not-be-used.ogg',
+    };
+
+    const html = renderBubble(message);
+
+    expect(html).not.toContain('should-not-be-used.ogg');
+  });
+
+  it('outbound (media_url, no storage path): unchanged — native <audio controls> on the public URL', () => {
+    const message: Message = {
+      ...AUDIO_BASE,
+      sender_type: 'agent',
+      status: 'sent',
+      media_storage_path: null,
+      media_url: 'https://public.example/chat-media/voice-1.ogg',
+    };
+
+    const html = renderBubble(message);
+
+    expect(html).toContain('<audio');
+    expect(html).toContain('src="https://public.example/chat-media/voice-1.ogg"');
+    expect(html).toContain('controls');
+  });
+
+  it('falls back to "unavailable" when there is neither a storage path nor a media_url', () => {
+    const message: Message = { ...AUDIO_BASE, media_storage_path: null, media_url: undefined };
+
+    const html = renderBubble(message);
+
+    expect(html).toContain('audio unavailable');
+  });
+});

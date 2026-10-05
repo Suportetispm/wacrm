@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 
-// GET /api/messages/[messageId]/attachment — resolves an inbound PDF or
-// image (migration 042/043: media_storage_path in the private
+// GET /api/messages/[messageId]/attachment — resolves an inbound PDF,
+// image or audio (migrations 042/043/084: media_storage_path in the private
 // `whatsapp-attachments` bucket) into a short-lived signed URL. The
 // bucket has no RLS policy at all — only the service-role client
 // (`supabaseAdmin()`) can read it, so this route is the sole sanctioned
@@ -26,13 +26,15 @@ const UUID_RE =
 const SIGNED_URL_TTL_SECONDS = 60
 const BUCKET = 'whatsapp-attachments'
 
-// content_type -> allowed media_mime_type values. Mirrors the two
-// inbound webhook paths that ever populate media_storage_path
-// (uazapi-webhook-document-persist.ts, uazapi-webhook-image-persist.ts)
-// and the bucket's own allowed_mime_types (migration 043).
+// content_type -> allowed media_mime_type values. Mirrors the inbound
+// webhook paths that ever populate media_storage_path
+// (uazapi-webhook-document-persist.ts, uazapi-webhook-image-persist.ts,
+// uazapi-webhook-audio-persist.ts — always MP3) and the bucket's own
+// allowed_mime_types (migrations 043/084).
 const ALLOWED_MIME_TYPES_BY_CONTENT_TYPE: Record<string, readonly string[]> = {
   document: ['application/pdf'],
   image: ['image/jpeg', 'image/png', 'image/webp'],
+  audio: ['audio/mpeg'],
 }
 
 export async function GET(

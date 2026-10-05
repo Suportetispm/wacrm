@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // No real database, no real HMAC computation, no real decrypt, and no
 // real download/upload/RPC anywhere in this file — every DB call, the
@@ -13,9 +13,8 @@ const mocks = vi.hoisted(() => ({
   persistInboundDocumentMessage: vi.fn(),
   parseInboundImageMessage: vi.fn(),
   persistInboundImageMessage: vi.fn(),
-  // TEMPORARY — audio download discovery.
-  shouldRunAudioDownloadDiscovery: vi.fn(() => false),
-  runAudioDownloadDiscovery: vi.fn(async () => {}),
+  parseInboundAudioMessage: vi.fn(),
+  persistInboundAudioMessage: vi.fn(),
   decrypt: vi.fn(),
   isAccountActive: vi.fn(),
   dispatchInboundToFlows: vi.fn(async () => ({ consumed: false, outcome: 'no_match' as const })),
@@ -62,10 +61,12 @@ vi.mock('@/lib/whatsapp/uazapi-webhook-image-persist', () => ({
   persistInboundImageMessage: mocks.persistInboundImageMessage,
 }))
 
-// TEMPORARY — audio download discovery (module unit-tested on its own).
-vi.mock('@/lib/whatsapp/uazapi-audio-download-discovery', () => ({
-  shouldRunAudioDownloadDiscovery: mocks.shouldRunAudioDownloadDiscovery,
-  runAudioDownloadDiscovery: mocks.runAudioDownloadDiscovery,
+vi.mock('@/lib/whatsapp/uazapi-webhook-audio-parser', () => ({
+  parseInboundAudioMessage: mocks.parseInboundAudioMessage,
+}))
+
+vi.mock('@/lib/whatsapp/uazapi-webhook-audio-persist', () => ({
+  persistInboundAudioMessage: mocks.persistInboundAudioMessage,
 }))
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
@@ -157,15 +158,13 @@ beforeEach(() => {
   mocks.persistInboundDocumentMessage.mockReset()
   mocks.parseInboundImageMessage.mockReset()
   mocks.persistInboundImageMessage.mockReset()
+  mocks.parseInboundAudioMessage.mockReset()
+  mocks.persistInboundAudioMessage.mockReset()
   mocks.decrypt.mockReset()
   mocks.verifyUazapiWebhookToken.mockReturnValue(true)
   mocks.parseInboundDocumentMessage.mockReturnValue(null)
   mocks.parseInboundImageMessage.mockReturnValue(null)
-  // TEMPORARY — audio download discovery: off by default in every test.
-  mocks.shouldRunAudioDownloadDiscovery.mockReset()
-  mocks.shouldRunAudioDownloadDiscovery.mockReturnValue(false)
-  mocks.runAudioDownloadDiscovery.mockReset()
-  mocks.runAudioDownloadDiscovery.mockResolvedValue(undefined)
+  mocks.parseInboundAudioMessage.mockReturnValue(null)
   mocks.decrypt.mockReturnValue('fixture-decrypted-token')
   mocks.isAccountActive.mockReset()
   mocks.isAccountActive.mockResolvedValue(true)
@@ -964,267 +963,36 @@ describe('POST /api/uazapi/webhook — ETAPA 078B: connection comes from the res
       expect.objectContaining({ accountId: CONFIG_ROW.account_id, whatsappConfigId: CONFIG_ROW.id }),
     )
   })
-})
 
-// TEMPORARY — audio shape discovery (UAZAPI_AUDIO_SHAPE_DISCOVERY=1).
-// Remove together with `logIgnoredMediaShape` in route.ts.
-describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — temporary audio shape discovery', () => {
-  const PREFIX = '[uazapi/webhook:audio-shape]'
-
-  const SENSITIVE_MARKERS = [
-    'SECRET_TOKEN_SHOULD_NOT_APPEAR',
-    'PRIVATE_OWNER_SHOULD_NOT_APPEAR',
-    'PRIVATE_BASEURL_SHOULD_NOT_APPEAR',
-    'PRIVATE_PHONE_SHOULD_NOT_APPEAR',
-    'PRIVATE_NAME_SHOULD_NOT_APPEAR',
-    'PRIVATE_JID_SHOULD_NOT_APPEAR',
-    'PRIVATE_TEXT_SHOULD_NOT_APPEAR',
-    'PRIVATE_URL_SHOULD_NOT_APPEAR',
-    'PRIVATE_MEDIAKEY_SHOULD_NOT_APPEAR',
-    'PRIVATE_DIRECTPATH_SHOULD_NOT_APPEAR',
-    'PRIVATE_HASH_SHOULD_NOT_APPEAR',
-    'PRIVATE_BASE64_SHOULD_NOT_APPEAR',
-    'PRIVATE_MESSAGE_ID_SHOULD_NOT_APPEAR',
-    'PRIVATE_MESSAGEID_SHOULD_NOT_APPEAR',
-    'PRIVATE_KEYNAME_SHOULD_NOT_APPEAR',
-    '5511987654321',
-  ]
-
-  /** Synthetic audio-like event: every value that must never be logged
-   *  carries a unique marker. Field names follow the real image
-   *  envelope (image-parser.ts) — the audio shape itself is unknown. */
-  function audioPayload(overrides: { message?: Record<string, unknown>; content?: Record<string, unknown> } = {}) {
-    return {
-      EventType: 'messages',
-      token: 'SECRET_TOKEN_SHOULD_NOT_APPEAR',
-      owner: 'PRIVATE_OWNER_SHOULD_NOT_APPEAR',
-      BaseUrl: 'https://PRIVATE_BASEURL_SHOULD_NOT_APPEAR.example',
-      instanceName: 'PRIVATE_NAME_SHOULD_NOT_APPEAR',
-      chatSource: 'PRIVATE_NAME_SHOULD_NOT_APPEAR',
-      chat: {
-        phone: 'PRIVATE_PHONE_SHOULD_NOT_APPEAR',
-        name: 'PRIVATE_NAME_SHOULD_NOT_APPEAR',
-        wa_chatid: 'PRIVATE_JID_SHOULD_NOT_APPEAR@s.whatsapp.net',
-        wa_isGroup: false,
-      },
-      message: {
-        id: 'PRIVATE_MESSAGE_ID_SHOULD_NOT_APPEAR',
-        messageid: 'PRIVATE_MESSAGEID_SHOULD_NOT_APPEAR',
-        chatid: 'PRIVATE_JID_SHOULD_NOT_APPEAR@s.whatsapp.net',
-        sender: '5511987654321@s.whatsapp.net',
-        sender_pn: 'PRIVATE_PHONE_SHOULD_NOT_APPEAR',
-        senderName: 'PRIVATE_NAME_SHOULD_NOT_APPEAR',
-        text: 'PRIVATE_TEXT_SHOULD_NOT_APPEAR',
-        fromMe: false,
-        isGroup: false,
-        wasSentByApi: false,
-        messageType: 'AudioMessage',
-        type: 'media',
-        messageTimestamp: 1735686000000,
-        content: {
-          URL: 'https://PRIVATE_URL_SHOULD_NOT_APPEAR.example/a',
-          mimetype: 'audio/ogg; codecs=opus',
-          fileSHA256: 'PRIVATE_HASH_SHOULD_NOT_APPEAR',
-          fileEncSHA256: 'PRIVATE_HASH_SHOULD_NOT_APPEAR',
-          mediaKey: 'PRIVATE_MEDIAKEY_SHOULD_NOT_APPEAR',
-          directPath: '/v/PRIVATE_DIRECTPATH_SHOULD_NOT_APPEAR',
-          base64: 'PRIVATE_BASE64_SHOULD_NOT_APPEAR',
-          fileLength: 12345,
-          seconds: 7,
-          PTT: true,
-          contextInfo: {
-            'PRIVATE_KEYNAME_SHOULD_NOT_APPEAR@s.whatsapp.net': 'PRIVATE_JID_SHOULD_NOT_APPEAR',
-            mentionedJID: ['PRIVATE_JID_SHOULD_NOT_APPEAR@s.whatsapp.net'],
-          },
-          ...overrides.content,
-        },
-        ...overrides.message,
-      },
-    }
-  }
-
-  let logSpy: ReturnType<typeof vi.spyOn>
-
-  // Fresh route module per test — the one-capture-per-process flag is
-  // module state, and route.ts can't export a reset helper (App Router
-  // route files may only export HTTP handlers/config).
-  async function freshPOST() {
-    vi.resetModules()
-    return (await import('./route')).POST
-  }
-
-  function shapeLogCalls() {
-    return logSpy.mock.calls.filter((args: unknown[]) => args[0] === PREFIX)
-  }
-
-  function parsedShapeLog(callIndex = 0) {
-    return JSON.parse(shapeLogCalls()[callIndex][1] as string)
-  }
-
-  beforeEach(() => {
+  it('audio: persistInboundAudioMessage receives whatsappConfigId = config.id', async () => {
     mocks.parseInboundTextMessage.mockReturnValue(null)
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-  })
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'duplicate', contactId: 'c', conversationId: 'v' })
 
-  afterEach(() => {
-    logSpy.mockRestore()
-    vi.unstubAllEnvs()
-  })
+    await POST(request(HOSTILE_BODY), params)
 
-  it('1: variable unset (default) — no diagnostic, response unchanged', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '')
-    const post = await freshPOST()
-
-    const res = await post(request(audioPayload()), params)
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: 'ignored' })
-    expect(shapeLogCalls()).toHaveLength(0)
-  })
-
-  it('1b: any value other than exactly "1" keeps it off', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', 'true')
-    const post = await freshPOST()
-
-    await post(request(audioPayload()), params)
-
-    expect(shapeLogCalls()).toHaveLength(0)
-  })
-
-  it('2: non-pertinent events (wrong EventType, or no media hint) — no diagnostic', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-
-    await post(request({ EventType: 'connection', message: { type: 'media' } }), params)
-    await post(
-      request({ EventType: 'messages', message: { messageType: 'ReactionMessage', type: 'reaction', content: {} } }),
-      params,
+    expect(mocks.persistInboundAudioMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: CONFIG_ROW.account_id, whatsappConfigId: CONFIG_ROW.id }),
     )
-
-    expect(shapeLogCalls()).toHaveLength(0)
-  })
-
-  it('2b: text/document/image accepted by their parsers — never reach the diagnostic', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
-    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'duplicate' })
-
-    const res = await post(request(audioPayload()), params)
-
-    expect(await res.json()).toEqual({ status: 'duplicate', type: 'image' })
-    expect(shapeLogCalls()).toHaveLength(0)
-  })
-
-  it('3 + 5: an ignored audio event is captured, with the allowlisted values', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-
-    const res = await post(request(audioPayload()), params)
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: 'ignored' })
-    expect(shapeLogCalls()).toHaveLength(1)
-    const log = parsedShapeLog()
-    expect(log.match).toBe('audio_hint')
-    expect(log.allowedValues).toEqual({
-      messageType: 'AudioMessage',
-      type: 'media',
-      mimetype: 'audio/ogg; codecs=opus',
-      PTT: true,
-      seconds: 7,
-    })
-    // Structure: key names and value types only, of `message` and
-    // `message.content`.
-    expect(log.messageShape.messageType).toBe('string')
-    expect(log.messageShape.content.mediaKey).toBe('string')
-    expect(log.messageShape.content.fileLength).toBe('number')
-    expect(log.messageShape.content.contextInfo['<redacted-key>']).toBe('string')
-  })
-
-  it('3c: the outer envelope is never part of the logged structure', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-
-    await post(request(audioPayload()), params)
-
-    const log = parsedShapeLog()
-    expect(Object.keys(log).sort()).toEqual(['allowedValues', 'instanceId', 'match', 'messageShape'])
-    const serialized = JSON.stringify(log)
-    for (const envelopeKey of ['token', 'owner', 'BaseUrl', 'chatSource', 'instanceName', 'EventType', 'wa_chatid', 'wa_isGroup']) {
-      expect(serialized).not.toContain(`"${envelopeKey}"`)
-    }
-    expect(log.messageShape).not.toHaveProperty('chat')
-  })
-
-  it('3b: fallback — an unexpected media type name with no audio hint is still captured', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-
-    await post(
-      request(audioPayload({ message: { messageType: 'SomethingNew' }, content: { mimetype: undefined } })),
-      params,
-    )
-
-    expect(shapeLogCalls()).toHaveLength(1)
-    expect(parsedShapeLog().match).toBe('media_fallback')
-  })
-
-  it('4: at most one capture per process', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-
-    await post(request(audioPayload()), params)
-    await post(request(audioPayload()), params)
-    await post(request(audioPayload({ message: { messageType: 'PttMessage' } })), params)
-
-    expect(shapeLogCalls()).toHaveLength(1)
-  })
-
-  it('6: no sensitive value, instance id or HMAC appears in any diagnostic argument', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-
-    await post(request(audioPayload()), params)
-
-    expect(shapeLogCalls()).toHaveLength(1)
-    const serialized = shapeLogCalls()
-      .flat()
-      .map((a: unknown) => (typeof a === 'string' ? a : JSON.stringify(a)))
-      .join('\n')
-    for (const marker of [...SENSITIVE_MARKERS, VALID_HMAC, INSTANCE_ID]) {
-      expect(serialized).not.toContain(marker)
-    }
-  })
-
-  it('6b: an allowlisted field carrying a non-enum value is rejected, not echoed', async () => {
-    vi.stubEnv('UAZAPI_AUDIO_SHAPE_DISCOVERY', '1')
-    const post = await freshPOST()
-
-    await post(
-      request(
-        audioPayload({
-          message: { type: 'media', mediaType: 'PRIVATE_NAME_SHOULD_NOT_APPEAR 5511987654321' },
-          content: { mimetype: 'audio/PRIVATE URL https://x', seconds: 'PRIVATE_TEXT_SHOULD_NOT_APPEAR' },
-        }),
-      ),
-      params,
-    )
-
-    const log = parsedShapeLog()
-    expect(log.allowedValues.mediaType).toBe('<rejected>')
-    expect(log.allowedValues.mimetype).toBe('<rejected>')
-    expect(log.allowedValues.seconds).toBeUndefined()
-    const serialized = JSON.stringify(log)
-    for (const marker of SENSITIVE_MARKERS) expect(serialized).not.toContain(marker)
   })
 })
 
-// TEMPORARY — audio download discovery: route wiring only (the module's
-// own behavior is tested in uazapi-audio-download-discovery.test.ts).
-// Remove together with the route block and the module.
-describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — TEMPORARY audio download discovery wiring', () => {
-  function voiceNoteRequest() {
+// Parser field-level filtering (fromMe/wasSentByApi/group/viewOnce/
+// mimetype/ids) is unit-tested in uazapi-webhook-audio-parser.test.ts.
+const PARSED_AUDIO_FIXTURE = {
+  providerMessageId: 'audio-msg-1',
+  providerDownloadId: 'audio-dl-1',
+  chatId: '551199999999@s.whatsapp.net',
+  sender: '551199999999@s.whatsapp.net',
+  senderName: 'Fixture',
+  occurredAt: '2026-01-01T00:00:00.000Z',
+  isVoiceNote: true,
+  durationSeconds: 3,
+  sourceMimeType: 'audio/ogg',
+}
+
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — audio / voice-note path', () => {
+  function audioRequest() {
     return request({ EventType: 'messages', message: { messageType: 'AudioMessage', type: 'media', mediaType: 'ptt' } })
   }
 
@@ -1232,45 +1000,97 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — TEMPORARY audio downl
     mocks.parseInboundTextMessage.mockReturnValue(null)
   })
 
-  it('when the gate says run: runs discovery with the decrypted token + masked id, returns 200, and never persists or dispatches', async () => {
-    mocks.shouldRunAudioDownloadDiscovery.mockReturnValue(true)
+  it('calls parseInboundAudioMessage only after text, document and image all reject the event', async () => {
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
 
-    const res = await POST(voiceNoteRequest(), params)
+    await POST(audioRequest(), params)
+
+    expect(mocks.parseInboundTextMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.parseInboundDocumentMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.parseInboundImageMessage).toHaveBeenCalledTimes(1)
+    expect(mocks.parseInboundAudioMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('never reaches the audio parser when an earlier parser accepts the event', async () => {
+    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'duplicate' })
+
+    await POST(audioRequest(), params)
+
+    expect(mocks.parseInboundAudioMessage).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 {status: "persisted", type: "audio"} and passes the decrypted instance token', async () => {
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
+
+    const res = await POST(audioRequest(), params)
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: 'ignored' })
-    expect(mocks.runAudioDownloadDiscovery).toHaveBeenCalledTimes(1)
-    expect(mocks.runAudioDownloadDiscovery).toHaveBeenCalledWith(
-      expect.objectContaining({ instanceToken: 'fixture-decrypted-token', maskedInstanceId: 'fix…id' }),
+    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
+    expect(mocks.persistInboundAudioMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: CONFIG_ROW.account_id,
+        configOwnerUserId: CONFIG_ROW.user_id,
+        instanceToken: 'fixture-decrypted-token',
+        parsed: PARSED_AUDIO_FIXTURE,
+      }),
     )
-    // No persistence path and no Flow. The admin-client mock only models
-    // `whatsapp_config` reads (any other table, rpc or storage would
-    // throw) — so a 200 here also proves no other DB access happened.
-    expect(mocks.persistInboundTextMessage).not.toHaveBeenCalled()
-    expect(mocks.persistInboundDocumentMessage).not.toHaveBeenCalled()
-    expect(mocks.persistInboundImageMessage).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 {status: "duplicate", type: "audio"} for a redelivery', async () => {
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'duplicate', contactId: 'c', conversationId: 'v' })
+
+    const res = await POST(audioRequest(), params)
+
+    expect(await res.json()).toEqual({ status: 'duplicate', type: 'audio' })
+  })
+
+  it('never dispatches audio to Flows, even when persisted', async () => {
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
+
+    await POST(audioRequest(), params)
+
     expect(mocks.dispatchInboundToFlows).not.toHaveBeenCalled()
   })
 
-  it('token unavailable: still 200 with only a fixed code, discovery not run', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    tokenLookupResult = { data: null, error: null }
-    mocks.shouldRunAudioDownloadDiscovery.mockReturnValue(true)
+  it('returns 503 persistence_failed (an observable failure, never acked as success) with only a fixed code in the log', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'error', code: 'download_failed' })
 
-    const res = await POST(voiceNoteRequest(), params)
+    const res = await POST(audioRequest(), params)
 
-    expect(res.status).toBe(200)
-    expect(mocks.runAudioDownloadDiscovery).not.toHaveBeenCalled()
-    const line = logSpy.mock.calls.find((a) => a[0] === '[uazapi/audio-download-shape]')
-    expect(line?.[1]).toBe(JSON.stringify({ code: 'token_unavailable' }))
-    logSpy.mockRestore()
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'persistence_failed' })
+    const logged = JSON.stringify(errorSpy.mock.calls)
+    expect(logged).toContain('download_failed')
+    expect(logged).not.toContain('551199999999')
+    expect(logged).not.toContain('audio-msg-1')
+    expect(logged).not.toContain(INSTANCE_ID)
+    errorSpy.mockRestore()
   })
 
-  it('when the gate says no (default): unchanged — an audio event is still acked 200 {status: "ignored"} without discovery', async () => {
-    const res = await POST(voiceNoteRequest(), params)
+  it('returns 503 without calling persistence when the instance token is unavailable', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    tokenLookupResult = { data: null, error: null }
+    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+
+    const res = await POST(audioRequest(), params)
+
+    expect(res.status).toBe(503)
+    expect(mocks.persistInboundAudioMessage).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('an event every parser rejects still acks 200 {status: "ignored"}', async () => {
+    const res = await POST(audioRequest(), params)
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ status: 'ignored' })
-    expect(mocks.runAudioDownloadDiscovery).not.toHaveBeenCalled()
+    expect(mocks.persistInboundAudioMessage).not.toHaveBeenCalled()
   })
 })

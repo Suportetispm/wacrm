@@ -398,6 +398,92 @@ function InlineImageAttachment({
   );
 }
 
+/**
+ * Inbound audio / voice note whose MP3 lives in the private
+ * `whatsapp-attachments` bucket (migration 084) — same private-path
+ * model as `InlineImageAttachment`: a 60s signed URL from
+ * `GET /api/messages/[messageId]/attachment`, played by the native
+ * `<audio>` element (play/pause, duration, progress). If the URL has
+ * expired by the time the browser (re)requests the file, one silent
+ * retry with a fresh URL before giving up.
+ */
+function InlineAudioAttachment({
+  messageId,
+  t,
+}: {
+  messageId: string;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [broken, setBroken] = useState(false);
+  const retriedRef = useRef(false);
+
+  const fetchSignedUrl = useCallback(async (): Promise<string | null> => {
+    const res = await fetch(`/api/messages/${messageId}/attachment`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data?.url === "string" ? data.url : null;
+  }, [messageId]);
+
+  // Initial state is already loading=true / broken=false — no
+  // synchronous setState here (react-hooks/set-state-in-effect).
+  useEffect(() => {
+    let alive = true;
+    fetchSignedUrl()
+      .then((url) => {
+        if (!alive) return;
+        if (url) setSrc(url);
+        else setBroken(true);
+      })
+      .catch(() => {
+        if (alive) setBroken(true);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fetchSignedUrl]);
+
+  const handleAudioError = useCallback(() => {
+    if (retriedRef.current) {
+      setBroken(true);
+      return;
+    }
+    retriedRef.current = true;
+    fetchSignedUrl()
+      .then((url) => {
+        if (url) setSrc(url);
+        else setBroken(true);
+      })
+      .catch(() => setBroken(true));
+  }, [fetchSignedUrl]);
+
+  if (broken) {
+    return <MediaUnavailable label={t("audio")} t={t} />;
+  }
+
+  if (loading || !src) {
+    return (
+      <div className="flex h-10 w-60 items-center justify-center rounded-lg bg-muted">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <audio
+      src={src}
+      controls
+      preload="metadata"
+      className="max-w-60"
+      onError={handleAudioError}
+    />
+  );
+}
+
 function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof useTranslations> }) {
   switch (message.content_type) {
     case "text":
@@ -453,9 +539,14 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
       );
 
     case "audio":
+      // Inbound audio (migration 084) lives behind a private storage
+      // path — played via a signed URL. Outbound audio keeps using the
+      // public `media_url` link below, unchanged.
       return (
         <div>
-          {message.media_url ? (
+          {message.media_storage_path ? (
+            <InlineAudioAttachment messageId={message.id} t={t} />
+          ) : message.media_url ? (
             <audio src={message.media_url} controls className="max-w-60" />
           ) : (
             <MediaUnavailable label={t("audio")} t={t} />
