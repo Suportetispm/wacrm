@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -13,6 +14,7 @@ import {
   PauseCircle,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 import { format, formatDistanceToNow } from "date-fns";
@@ -48,8 +50,50 @@ interface RunRow {
   end_reason: string | null;
   vars: Record<string, unknown>;
   reprompt_count: number;
+  /** Fase 1A.1: already on flow_runs since migration 010 — just not
+   *  previously selected by this route. Lets the run card link
+   *  straight to the conversation, same `/inbox?c=` shape every other
+   *  deep-link in the app already uses. No Tickets linkage here — out
+   *  of scope for this etapa. */
+  conversation_id: string | null;
   contact: { id: string; name: string | null; phone: string } | null;
 }
+
+/**
+ * Whitelist of `flow_runs.end_reason` values the engine actually
+ * writes (engine.ts's `endRun(...)` call sites + the timeout cron's
+ * `stale_sweep`) mapped to a human-readable i18n key. Deliberately a
+ * closed list rather than interpolating the raw reason string into
+ * the UI: `end_reason` is an internal code (not free text an attacker
+ * controls, but also not something a non-technical operator should
+ * have to decode), and a closed whitelist means a future engine
+ * change that adds a new reason fails safe — it shows the generic
+ * fallback instead of a raw, un-translated code leaking through.
+ */
+const END_REASON_KEYS: Record<string, string> = {
+  handoff_node: "endReasonHandoffNode",
+  end_node: "endReasonEndNode",
+  missing_next_node: "endReasonMissingNextNode",
+  node_not_found: "endReasonNodeNotFound",
+  send_text_failed: "endReasonSendTextFailed",
+  send_media_failed: "endReasonSendMediaFailed",
+  collect_input_prompt_failed: "endReasonCollectInputPromptFailed",
+  condition_evaluation_failed: "endReasonConditionEvaluationFailed",
+  queue_menu_prompt_failed: "endReasonQueueMenuPromptFailed",
+  unknown_node_type: "endReasonUnknownNodeType",
+  advance_loop_overflow: "endReasonAdvanceLoopOverflow",
+  queue_menu_option_queue_invalid: "endReasonQueueMenuOptionQueueInvalid",
+  queue_menu_fallback_queue_invalid: "endReasonQueueMenuFallbackQueueInvalid",
+  queue_menu_exhausted_no_fallback: "endReasonQueueMenuExhaustedNoFallback",
+  active_run_missing_current_node: "endReasonActiveRunMissingCurrentNode",
+  current_node_not_found: "endReasonCurrentNodeNotFound",
+  fallback_exhausted: "endReasonFallbackExhausted",
+  fallback_exhausted_end: "endReasonFallbackExhaustedEnd",
+  stale_sweep: "endReasonStaleSweep",
+  // Written outside engine.ts — src/lib/whatsapp/send-message.ts
+  // pauses the active run when an agent replies.
+  agent_replied: "endReasonAgentReplied",
+};
 
 interface EventRow {
   flow_run_id: string;
@@ -233,6 +277,12 @@ function RunCard({
         addSuffix: false,
       })
     : null;
+  // Friendly end_reason — see END_REASON_KEYS's own comment for why
+  // this is a closed whitelist rather than showing the raw code.
+  const endReasonKey = run.end_reason ? END_REASON_KEYS[run.end_reason] : null;
+  const endReasonLabel = run.end_reason
+    ? t(endReasonKey ?? "endReasonUnknown")
+    : null;
   return (
     <div className="rounded-lg border border-border bg-card">
       <button
@@ -271,6 +321,16 @@ function RunCard({
                 {t("atNode", { node: run.current_node_key })}
               </code>
             )}
+            {run.conversation_id && (
+              <Link
+                href={`/inbox?c=${run.conversation_id}`}
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {t("openConversation")}
+              </Link>
+            )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
             <span>{t("started", { time: format(new Date(run.started_at), "PP p") })}</span>
@@ -278,6 +338,7 @@ function RunCard({
               <span>· {t("reprompts", { count: run.reprompt_count })}</span>
             )}
             {duration && <span>· {t("ranFor", { duration })}</span>}
+            {endReasonLabel && <span>· {endReasonLabel}</span>}
           </div>
         </div>
       </button>

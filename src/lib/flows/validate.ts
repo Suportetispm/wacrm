@@ -132,6 +132,55 @@ export function validateFlowForActivation(
     }
   }
 
+  // Exactly one `start` node, wired as the entry (Fase 1A.1, Trabalho
+  // 3). `entry_node_id` resolving to SOME node was already enforced
+  // above — this narrows it further: that node must specifically be
+  // the flow's one-and-only `start` node. Skipped when the more basic
+  // "entry doesn't exist" error above already fired, so a bad
+  // reference is never reported twice under two different messages.
+  const startNodes = nodes.filter((n) => n.node_type === "start");
+  if (startNodes.length === 0) {
+    issues.push({
+      severity: "error",
+      scope: "flow",
+      field: "entry_node_id",
+      message: "A flow needs exactly one start node.",
+    });
+  } else if (startNodes.length > 1) {
+    for (const n of startNodes) {
+      issues.push({
+        severity: "error",
+        scope: "node",
+        node_key: n.node_key,
+        message: `A flow can only have one start node — found ${startNodes.length} (${startNodes.map((s) => s.node_key).join(", ")}).`,
+      });
+    }
+  } else if (
+    flow.entry_node_id &&
+    keys.has(flow.entry_node_id) &&
+    flow.entry_node_id !== startNodes[0].node_key
+  ) {
+    issues.push({
+      severity: "error",
+      scope: "flow",
+      field: "entry_node_id",
+      message: `Entry node must be the start node ("${startNodes[0].node_key}"), not "${flow.entry_node_id}".`,
+    });
+  }
+
+  // Cycle detection (Fase 1A.1, Trabalho 2) — see findAutoAdvanceCycle's
+  // own doc comment for exactly what this does and doesn't flag.
+  const cycle = findAutoAdvanceCycle(nodes);
+  if (cycle) {
+    issues.push({
+      severity: "error",
+      scope: "flow",
+      message:
+        `This flow loops forever without ever waiting for a customer reply: ${cycle.join(" → ")}. ` +
+        "Break the loop with a node that suspends for input (a question, buttons, or a list) or route it to an end node.",
+    });
+  }
+
   return issues;
 }
 
@@ -882,6 +931,111 @@ export function reachableFromEntry(
     }
   }
   return visited;
+}
+
+// ============================================================
+// Cycle detection — Fase 1A.1, Trabalho 2
+// ============================================================
+
+/**
+ * Node types that `advanceFromNodeKey` (engine.ts) walks through
+ * synchronously, in the same webhook request, without ever suspending
+ * to wait for a customer reply. Deliberately duplicated from
+ * engine.ts's `isAutoAdvancing` rather than imported: this validator
+ * ships to the BROWSER (the builder calls `validateFlowForActivation`
+ * live from flow-editor-state.tsx, a client component), while
+ * engine.ts pulls in `supabaseAdmin` and the Meta-send client — those
+ * must never end up in a client bundle. Keep this list in sync with
+ * `isAutoAdvancing` in engine.ts by hand; a mismatch would only make
+ * this check too loose or too strict, never unsafe (the runtime
+ * 64-hop cap in `advanceFromNodeKey` stays as the authoritative
+ * backstop regardless).
+ */
+const AUTO_ADVANCING_NODE_TYPES = new Set([
+  "start",
+  "send_message",
+  "send_media",
+  "condition",
+  "set_tag",
+  "assign_queue",
+]);
+
+/**
+ * Finds a cycle made ENTIRELY of auto-advancing nodes — the only
+ * shape that can loop forever inside `advanceFromNodeKey`'s
+ * synchronous walk without ever reaching a node that yields back to
+ * the customer. A cycle that passes through a suspending node
+ * (`send_buttons`, `send_list`, `collect_input`, `queue_menu`) is
+ * NOT flagged: the run suspends and waits for a genuine reply on
+ * every trip around the loop, which is the ordinary "reprompt on an
+ * invalid choice" shape and a legitimate, intentional use of a cycle
+ * in the graph.
+ *
+ * This is deliberately conservative (only the risky subgraph, not
+ * "any cycle at all") per the etapa's own framing: not every
+ * conceptual loop is invalid, the engine just doesn't have formal
+ * semantics for a CONTROLLED loop yet — a loop that always suspends
+ * on a real customer reply already IS controlled by that reply.
+ *
+ * Returns the cycle as an ordered list of node_keys (first key
+ * repeated at the end) for a readable error message, or `null` when
+ * none exists. Runs a plain DFS with a 3-color visited set — bounded
+ * by node count, cheap enough to run on every activation attempt and
+ * on every client-side "live" validation pass.
+ *
+ * This is a save-time NARROWING, not a replacement for the runtime
+ * 64-hop defensive cap in `advanceFromNodeKey` (engine.ts) — that cap
+ * stays untouched as the second line of defense for anything this
+ * static check can't see.
+ */
+export function findAutoAdvanceCycle(nodes: NodeInput[]): string[] | null {
+  const byKey = new Map<string, NodeInput>();
+  for (const n of nodes) byKey.set(n.node_key, n);
+
+  const WHITE = 0;
+  const GRAY = 1;
+  const BLACK = 2;
+  const color = new Map<string, number>();
+  for (const n of nodes) color.set(n.node_key, WHITE);
+  const stack: string[] = [];
+
+  function visit(key: string): string[] | null {
+    color.set(key, GRAY);
+    stack.push(key);
+    const node = byKey.get(key);
+    if (node && AUTO_ADVANCING_NODE_TYPES.has(node.node_type)) {
+      for (const next of outgoingEdges(node)) {
+        // An edge INTO a non-auto-advancing node (or a dangling
+        // reference validateNode already reports elsewhere) leaves the
+        // risky subgraph entirely — never traversed for cycle purposes.
+        const nextType = byKey.get(next)?.node_type;
+        if (!nextType || !AUTO_ADVANCING_NODE_TYPES.has(nextType)) continue;
+        const c = color.get(next);
+        if (c === GRAY) {
+          const idx = stack.indexOf(next);
+          return [...stack.slice(idx), next];
+        }
+        if (c === WHITE) {
+          const found = visit(next);
+          if (found) return found;
+        }
+      }
+    }
+    stack.pop();
+    color.set(key, BLACK);
+    return null;
+  }
+
+  for (const n of nodes) {
+    if (
+      AUTO_ADVANCING_NODE_TYPES.has(n.node_type) &&
+      color.get(n.node_key) === WHITE
+    ) {
+      const found = visit(n.node_key);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function outgoingEdges(node: NodeInput): string[] {

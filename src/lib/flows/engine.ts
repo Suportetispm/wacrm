@@ -475,6 +475,55 @@ async function sendListAndSuspend(
   return { outcome: "advanced", node_key: node.node_key };
 }
 
+/**
+ * Re-validates a candidate `handoff.assign_to` user id against the
+ * run's own account before it's written to
+ * `conversations.assigned_agent_id` — never trusts `node.config` at
+ * face value, same rule `resolveAndAssignQueue` already applies to
+ * `assign_queue`/`queue_menu`'s `queue_id` (Flows execute via
+ * service_role, which bypasses RLS entirely, so a config value is
+ * only a hint the builder wrote at authoring time — the account
+ * could have changed, or the member could have been removed/
+ * deactivated, since).
+ *
+ * Checks the same two gates as `resolveAndAssignQueue`: tenancy
+ * (`profiles.account_id` must match the run's account) and
+ * `profiles.is_active` (migration 048) — the same eligibility bit
+ * `eligibleTransferAgentCandidates` (src/lib/tickets/candidates.ts)
+ * and the ticket-transfer RPCs already treat as "can never be a valid
+ * assignment target". No separate parallel validator — this mirrors
+ * `resolveAndAssignQueue`'s exact shape so the two node types can't
+ * drift apart on tenancy semantics.
+ */
+async function resolveHandoffAssignee(
+  db: AdminClient,
+  run: FlowRunRow,
+  userId: string,
+): Promise<
+  | { status: "valid" }
+  | {
+      status: "invalid";
+      reason: "user not found" | "user belongs to a different account" | "user is not active";
+    }
+> {
+  const { data: profile, error } = await db
+    .from("profiles")
+    .select("user_id, account_id, is_active")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !profile) {
+    return { status: "invalid", reason: "user not found" };
+  }
+  const p = profile as { account_id: string; is_active: boolean };
+  if (p.account_id !== run.account_id) {
+    return { status: "invalid", reason: "user belongs to a different account" };
+  }
+  if (!p.is_active) {
+    return { status: "invalid", reason: "user is not active" };
+  }
+  return { status: "valid" };
+}
+
 async function executeHandoff(
   db: AdminClient,
   run: FlowRunRow,
@@ -485,16 +534,36 @@ async function executeHandoff(
     status: "pending",
     updated_at: new Date().toISOString(),
   };
-  if (cfg.assign_to) convUpdate.assigned_agent_id = cfg.assign_to;
+  // Never stranded on a bad assignee — same non-fatal contract as
+  // `executeAssignQueue`: an invalid `assign_to` (cross-tenant,
+  // deleted, or deactivated) never blocks the handoff itself. The
+  // conversation still flips to `pending` and the run still ends, just
+  // without an assignee, so any agent in the account's shared queue
+  // can still pick it up. `queue_id` is never touched here, valid or
+  // not — this node has no queue concept.
+  let assignedTo: string | null = null;
+  if (cfg.assign_to) {
+    const result = await resolveHandoffAssignee(db, run, cfg.assign_to);
+    if (result.status === "valid") {
+      convUpdate.assigned_agent_id = cfg.assign_to;
+      assignedTo = cfg.assign_to;
+    } else {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "handoff_assign_to_invalid",
+        detail: result.reason,
+      });
+    }
+  }
   if (run.conversation_id) {
     await db
       .from("conversations")
       .update(convUpdate)
-      .eq("id", run.conversation_id);
+      .eq("id", run.conversation_id)
+      .eq("account_id", run.account_id);
   }
   await logEvent(db, run.id, "handoff", node.node_key, {
     note: cfg.note ?? null,
-    assigned_to: cfg.assign_to ?? null,
+    assigned_to: assignedTo,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
 }
