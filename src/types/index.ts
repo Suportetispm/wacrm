@@ -230,6 +230,49 @@ export interface Conversation {
 }
 
 // ============================================================
+// Conversation history (migration 086 — conversation_events)
+// ============================================================
+
+/** Exactly the event types allowed by conversation_events_type_check (086). */
+export type ConversationEventType =
+  | 'history_started'
+  | 'opened'
+  | 'reopened'
+  | 'assigned'
+  | 'reassigned'
+  | 'unassigned'
+  | 'queue_changed'
+  | 'closed'
+  | 'finalized';
+
+/**
+ * One append-only history event, as returned by
+ * GET /api/conversations/[id]/history. `*_name` are snapshots frozen at
+ * event time (never re-resolved from profiles/queues). `actor_user_id`
+ * NULL = system (webhook / Flow / Automation). `history_started` is the
+ * known state when tracking began (migration 086), not when the
+ * attendance started. account_id is deliberately not exposed.
+ */
+export interface ConversationEvent {
+  id: string;
+  event_type: ConversationEventType;
+  actor_user_id: string | null;
+  actor_name: string | null;
+  from_agent_id: string | null;
+  from_agent_name: string | null;
+  to_agent_id: string | null;
+  to_agent_name: string | null;
+  from_queue_id: string | null;
+  from_queue_name: string | null;
+  to_queue_id: string | null;
+  to_queue_name: string | null;
+  /** Conversation status before/after (DB text — not constrained by an enum). */
+  from_status: string | null;
+  to_status: string | null;
+  created_at: string;
+}
+
+// ============================================================
 // Notifications (migration 027)
 // ============================================================
 
