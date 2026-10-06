@@ -1277,6 +1277,11 @@ export function MessageThread({
               alt={displayName}
               fallback={displayName.charAt(0).toUpperCase()}
               imgClassName="h-9 w-9 rounded-full object-cover"
+              zoom={{
+                openLabel: t("viewContactPhoto", { name: displayName }),
+                title: t("contactPhotoTitle", { name: displayName }),
+                closeLabel: t("closeContactPhoto"),
+              }}
             />
           </div>
           <div className="min-w-0">

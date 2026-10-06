@@ -226,7 +226,19 @@ describe('syncContactWhatsAppAvatar — happy paths', () => {
 describe('syncContactWhatsAppAvatar — failures keep the current photo', () => {
   const withPhoto = () => fakeDb({ contact: { id: CONTACT, account_id: ACCOUNT, whatsapp_avatar_path: pathFor(JPEG), whatsapp_avatar_checked_at: null } })
 
-  it.each([429, 500, 503, 401])('UAZAPI %i: transient — no DB write, photo kept, in-memory backoff (no retry on the next message)', async (status) => {
+  it('UAZAPI 429: reported as throttled — same transient effects (no DB write, photo kept, backoff)', async () => {
+    const db = withPhoto()
+    avatarMock.mockRejectedValue(new UazapiHttpError(429, 'x'))
+
+    expect(await run(db)).toBe('throttled')
+    expect(db.__updates).toHaveLength(0)
+    expect(db.__remove).not.toHaveBeenCalled()
+    expect(await run(db)).toBe('skipped_backoff')
+    expect(avatarMock).toHaveBeenCalledTimes(1)
+    expect(await run(db, { now: () => NOW + AVATAR_TRANSIENT_BACKOFF_MS + 1 })).toBe('throttled')
+  })
+
+  it.each([500, 503, 401])('UAZAPI %i: transient — no DB write, photo kept, in-memory backoff (no retry on the next message)', async (status) => {
     const db = withPhoto()
     avatarMock.mockRejectedValue(new UazapiHttpError(status, 'x'))
 
@@ -352,5 +364,116 @@ describe('syncContactWhatsAppAvatar — isolation and input guards', () => {
     for (const s of [CDN_URL, 'secret', CHAT_ID, '5591999999999', 'token-of-this-connection']) {
       expect(logged).not.toContain(s)
     }
+  })
+})
+
+describe('syncContactWhatsAppAvatar — mode (webhook vs background Inbox sync)', () => {
+  const PHONE_DIGITS = '5591999999999'
+  const withPhoto = () =>
+    fakeDb({ contact: { id: CONTACT, account_id: ACCOUNT, whatsapp_avatar_path: pathFor(JPEG), whatsapp_avatar_checked_at: null } })
+
+  it('webhook mode (default) keeps the existing semantics: url "" clears the photo', async () => {
+    const db = withPhoto()
+    avatarMock.mockResolvedValue({ url: '' })
+    expect(await run(db, { mode: 'webhook' })).toBe('no_photo')
+    expect(db.__updates[0].payload).toEqual({ whatsapp_avatar_path: null, whatsapp_avatar_checked_at: new Date(NOW).toISOString() })
+    expect(db.__remove).toHaveBeenCalledWith([pathFor(JPEG)])
+  })
+
+  it('background mode: url "" NEVER removes an existing photo — only checked_at is marked', async () => {
+    const db = withPhoto()
+    avatarMock.mockResolvedValue({ url: '' })
+    expect(await run(db, { mode: 'background', chatId: PHONE_DIGITS })).toBe('no_photo_kept')
+    expect(db.__updates).toHaveLength(1)
+    expect(db.__updates[0].payload).toEqual({ whatsapp_avatar_checked_at: new Date(NOW).toISOString() })
+    expect(db.__remove).not.toHaveBeenCalled()
+    expect(fetchImageMock).not.toHaveBeenCalled()
+  })
+
+  it('background mode without a stored photo: url "" is a plain no_photo (checked_at set, nothing to remove)', async () => {
+    const db = fakeDb()
+    avatarMock.mockResolvedValue({ url: '' })
+    expect(await run(db, { mode: 'background', chatId: PHONE_DIGITS })).toBe('no_photo')
+    expect(db.__updates[0].payload).toEqual({ whatsapp_avatar_path: null, whatsapp_avatar_checked_at: new Date(NOW).toISOString() })
+    expect(db.__remove).not.toHaveBeenCalled()
+  })
+
+  it('background mode: sends the stored phone digits as `number` (no JID built), preview true, no force', async () => {
+    const db = fakeDb()
+    expect(await run(db, { mode: 'background', chatId: PHONE_DIGITS })).toBe('updated')
+    expect(avatarMock).toHaveBeenCalledWith({ instanceToken: 'token-of-this-connection', number: PHONE_DIGITS, preview: true })
+    expect(avatarMock.mock.calls[0][0]).not.toHaveProperty('force')
+  })
+
+  it('background mode respects the 7-day cooldown (fresh: no token, no UAZAPI call)', async () => {
+    const db = fakeDb({
+      contact: { id: CONTACT, account_id: ACCOUNT, whatsapp_avatar_path: pathFor(JPEG), whatsapp_avatar_checked_at: new Date(NOW - 1000).toISOString() },
+    })
+    expect(await run(db, { mode: 'background', chatId: PHONE_DIGITS })).toBe('fresh')
+    expect(getInstanceToken).not.toHaveBeenCalled()
+    expect(avatarMock).not.toHaveBeenCalled()
+  })
+
+  it('in-flight dedup: a second call for the same contact while one runs is skipped', async () => {
+    const db = fakeDb()
+    let release!: () => void
+    avatarMock.mockImplementation(() => new Promise((resolve) => (release = () => resolve({ url: '' }))))
+    const first = run(db, { mode: 'background', chatId: PHONE_DIGITS })
+    await vi.waitFor(() => expect(avatarMock).toHaveBeenCalledTimes(1))
+    expect(await run(db, { mode: 'background', chatId: PHONE_DIGITS })).toBe('skipped_in_flight')
+    release()
+    expect(await first).toBe('no_photo')
+  })
+})
+
+describe('extractIndividualChatId — real voice-note (PTT AudioMessage) shape', () => {
+  // Same real-shaped fixture as uazapi-webhook-audio-parser.test.ts
+  // (structure of a captured inbound voice note; values synthetic).
+  const realVoiceNote = (message: Record<string, unknown> = {}, chat: Record<string, unknown> = {}) => ({
+    EventType: 'messages',
+    token: 'fixture-token',
+    owner: '5591900000000',
+    BaseUrl: 'https://example.uazapi.test',
+    chat: { phone: '+55 91 99999-9999', wa_chatid: CHAT_ID, wa_isGroup: false, ...chat },
+    message: {
+      id: 'dl-id-1',
+      messageid: 'msg-id-1',
+      chatid: CHAT_ID,
+      sender: CHAT_ID,
+      sender_pn: CHAT_ID,
+      senderName: 'Cliente Teste',
+      fromMe: false,
+      wasSentByApi: false,
+      isGroup: false,
+      messageType: 'AudioMessage',
+      type: 'media',
+      mediaType: 'ptt',
+      messageTimestamp: 1735686000000,
+      content: {
+        URL: 'https://example.uazapi.test/media/secret-audio',
+        directPath: '/v/t62.7117-24/secret-path',
+        fileLength: 5_432,
+        mimetype: 'audio/ogg; codecs=opus',
+        seconds: 3,
+        PTT: true,
+      },
+      ...message,
+    },
+  })
+
+  it('returns the same chatid the real audio parser reads — audio and text agree', async () => {
+    const { parseInboundAudioMessage } = await import('./uazapi-webhook-audio-parser')
+    const payload = realVoiceNote()
+    expect(parseInboundAudioMessage(payload)?.chatId).toBe(CHAT_ID)
+    expect(extractIndividualChatId(payload)).toBe(CHAT_ID)
+  })
+
+  it('non-PTT audio file (mediaType "audio") also yields the chatid', () => {
+    expect(extractIndividualChatId(realVoiceNote({ mediaType: 'audio' }))).toBe(CHAT_ID)
+  })
+
+  it('a group voice note is ignored', () => {
+    expect(extractIndividualChatId(realVoiceNote({ isGroup: true }))).toBeNull()
+    expect(extractIndividualChatId(realVoiceNote({ chatid: '120363000000000000@g.us' }))).toBeNull()
   })
 })

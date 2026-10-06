@@ -7,21 +7,33 @@
  *   contact (id + account_id) → checked_at fresh? stop
  *   → POST /chat/avatar (token of the SAME connection that received the
  *     message, chatId exactly as UAZAPI sent it, preview=true, no force)
- *   → url "" → clear whatsapp_avatar_path
+ *   → url "" → clear whatsapp_avatar_path (webhook mode only — see below)
  *   → url → guarded download (whatsapp-avatar-fetch.ts) → sha256 of the
  *     CONTENT → `whatsapp-attachments/{account}/contacts/{contact}/{sha256}.{ext}`
  *     → update contacts → best-effort removal of the previous file.
  *
+ * Modes:
+ *   - 'webhook' (default): chatId is the real `message.chatid` UAZAPI
+ *     just sent, so `url ""` is trusted and clears the stored photo.
+ *   - 'background' (Inbox sync of existing conversations, POST
+ *     /api/contacts/avatar-sync): chatId is the contact's stored phone,
+ *     which may not be the exact variant WhatsApp identifies the chat by
+ *     — so `url ""` NEVER removes an existing photo; it only marks the
+ *     check done.
+ *
  * Failure policy:
  *   - Definitive answers mark `whatsapp_avatar_checked_at` (normal 7-day
  *     interval): photo stored, same photo, no photo (`url ""` — path
- *     cleared), and a 400/404 from UAZAPI (current photo kept).
+ *     cleared in webhook mode, kept in background mode), and a 400/404
+ *     from UAZAPI (current photo kept).
  *   - Everything else keeps the current photo and does NOT touch the
  *     database (no 7-day cooldown): transient failures (401, 429, 5xx,
  *     timeout, network, download HTTP error, upload, DB) and any refusal
  *     by the download security policy (a CDN/format change must not park
  *     the contact for a week). An in-memory per-contact backoff (1 h)
  *     avoids retrying on every message; it lives in this process only.
+ *     A UAZAPI 429 is reported as 'throttled' (same side effects) so a
+ *     batch caller can stop early.
  *
  * Never throws. Never logs URLs, phone/JID/chatId, tokens or names —
  * only fixed codes.
@@ -31,11 +43,12 @@ import { createHash } from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getChatAvatar, UazapiHttpError } from './uazapi-api'
 import { fetchWhatsAppAvatarImage, WhatsAppAvatarFetchError, type AvatarImageFormat } from './whatsapp-avatar-fetch'
+import { AVATAR_RECHECK_INTERVAL_MS } from '@/lib/inbox/contact-avatar-sync-shared'
 
 const BUCKET = 'whatsapp-attachments'
 const LOG_PREFIX = '[contact-avatar-sync]'
 
-export const AVATAR_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
+export { AVATAR_RECHECK_INTERVAL_MS }
 export const AVATAR_TRANSIENT_BACKOFF_MS = 60 * 60 * 1000
 
 const FORMAT_TO_EXTENSION: Record<AvatarImageFormat, string> = { jpeg: 'jpg', png: 'png', webp: 'webp' }
@@ -60,9 +73,11 @@ export type ContactAvatarSyncOutcome =
   | 'skipped_not_found'
   | 'fresh'
   | 'no_photo'
+  | 'no_photo_kept'
   | 'unchanged'
   | 'updated'
   | 'refused'
+  | 'throttled'
   | 'transient_error'
   | 'database_error'
 
@@ -125,6 +140,8 @@ export interface SyncContactWhatsAppAvatarArgs {
   contactId: string
   /** Chat id exactly as UAZAPI sent it (or a number with DDI) — never reconstructed. */
   chatId: string
+  /** 'webhook' (default) trusts `url ""` to clear the photo; 'background' never clears an existing one. */
+  mode?: 'webhook' | 'background'
   /** Resolves the token of the SAME connection that received the message. Called only if a query is actually due. */
   getInstanceToken: () => Promise<string>
   now?: () => number
@@ -132,6 +149,7 @@ export interface SyncContactWhatsAppAvatarArgs {
 
 export async function syncContactWhatsAppAvatar(args: SyncContactWhatsAppAvatarArgs): Promise<ContactAvatarSyncOutcome> {
   const { db, accountId, contactId, chatId, getInstanceToken } = args
+  const mode = args.mode ?? 'webhook'
   const now = args.now ?? Date.now
 
   if (!UUID_PATTERN.test(accountId) || !UUID_PATTERN.test(contactId) || !isIndividualChatId(chatId)) {
@@ -209,12 +227,21 @@ export async function syncContactWhatsAppAvatar(args: SyncContactWhatsAppAvatarA
         console.error(LOG_PREFIX, 'refused', `uazapi_${err.status}`)
         return (await markChecked()) ? 'refused' : dbError()
       }
+      if (err instanceof UazapiHttpError && err.status === 429) {
+        transient('uazapi_429')
+        return 'throttled'
+      }
       return transient(err instanceof UazapiHttpError ? `uazapi_${err.status}` : 'uazapi_unreachable')
     } finally {
       token = ''
     }
 
     if (avatarUrl === '') {
+      if (mode === 'background' && currentPath) {
+        // The stored phone may not be the chat's exact WhatsApp id — an
+        // empty answer is not proof the photo is gone. Keep it.
+        return (await markChecked()) ? 'no_photo_kept' : dbError()
+      }
       const { error } = await db
         .from('contacts')
         .update({ whatsapp_avatar_path: null, whatsapp_avatar_checked_at: new Date(now()).toISOString() })

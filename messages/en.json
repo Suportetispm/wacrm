@@ -489,7 +489,10 @@
       "selectConversationHint": "Choose a conversation from the left to start messaging",
       "today": "Today",
       "yesterday": "Yesterday",
-      "markReadFailed": "Couldn't mark this conversation as read."
+      "markReadFailed": "Couldn't mark this conversation as read.",
+      "viewContactPhoto": "View {name}'s photo",
+      "contactPhotoTitle": "{name}'s profile photo",
+      "closeContactPhoto": "Close photo"
     },
     "sessionTimer": {
       "expired": "Expired",

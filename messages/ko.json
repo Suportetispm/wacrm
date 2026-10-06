@@ -489,7 +489,10 @@
       "selectConversationHint": "왼쪽에서 대화를 선택해 메시지를 시작하세요",
       "today": "오늘",
       "yesterday": "어제",
-      "markReadFailed": "이 대화를 읽음으로 표시하지 못했습니다."
+      "markReadFailed": "이 대화를 읽음으로 표시하지 못했습니다.",
+      "viewContactPhoto": "{name}님의 사진 보기",
+      "contactPhotoTitle": "{name}님의 프로필 사진",
+      "closeContactPhoto": "사진 닫기"
     },
     "sessionTimer": {
       "expired": "만료됨",

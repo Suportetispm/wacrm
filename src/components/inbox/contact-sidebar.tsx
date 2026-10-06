@@ -143,6 +143,11 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                 alt={displayName}
                 fallback={initials}
                 imgClassName="h-16 w-16 rounded-full object-cover"
+                zoom={{
+                  openLabel: tThread("viewContactPhoto", { name: displayName }),
+                  title: tThread("contactPhotoTitle", { name: displayName }),
+                  closeLabel: tThread("closeContactPhoto"),
+                }}
               />
             </div>
             <h3 className="mt-3 text-sm font-semibold text-foreground">

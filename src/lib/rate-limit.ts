@@ -257,6 +257,13 @@ export const RATE_LIMITS = {
    *  key past the provider's own rate limit. 60/min ≈ three busy agents
    *  drafting flat-out. */
   aiDraftAccount: { limit: 60, windowMs: 60_000 },
+  /** Inbox contact-avatar background sync (POST /api/contacts/avatar-sync),
+   *  per account — shared by every agent/tab of the account. Each call
+   *  carries at most AVATAR_SYNC_MAX_CONVERSATIONS_PER_REQUEST ids and the
+   *  client sends one at a time, so 20/min is a generous ceiling for
+   *  normal use while bounding the UAZAPI calls a busy team can trigger.
+   *  Internal WACRM safeguard, not a UAZAPI-documented limit. */
+  avatarSyncAccount: { limit: 20, windowMs: 60_000 },
   /** Ticket operational actions (claim/transfer-queue/transfer-agent/
    *  waiting-customer/resume/close), per user, shared across all six
    *  — see supabase/migrations/049_ticket_operations.sql. 30/min is

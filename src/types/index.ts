@@ -117,6 +117,10 @@ export interface Contact {
    *  = no known photo (UI shows initials). */
   whatsapp_avatar_path?: string | null;
   whatsapp_avatar_checked_at?: string | null;
+  /** CLIENT-ONLY (never a DB column): opaque avatar version returned by
+   *  POST /api/contacts/avatar-sync. When present (string or null) it
+   *  overrides the version derived from `whatsapp_avatar_path`. */
+  whatsapp_avatar_version?: string | null;
   created_at: string;
   updated_at: string;
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the
@@ -207,6 +211,9 @@ export interface Conversation {
   created_at: string;
   updated_at: string;
   contact?: Contact;
+  /** Connection this conversation happens on (migration 078). NULL =
+   *  legacy/unknown — never resolved to the primary connection. */
+  whatsapp_config_id?: string | null;
   active_ticket?: ActiveConversationTicket | null;
   /**
    * AI auto-reply state for this thread (migration 029 + 033):

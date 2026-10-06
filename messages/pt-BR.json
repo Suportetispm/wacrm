@@ -489,7 +489,10 @@
       "selectConversationHint": "Escolha uma conversa à esquerda para começar a enviar mensagens",
       "today": "Hoje",
       "yesterday": "Ontem",
-      "markReadFailed": "Não foi possível marcar esta conversa como lida."
+      "markReadFailed": "Não foi possível marcar esta conversa como lida.",
+      "viewContactPhoto": "Ver foto de {name}",
+      "contactPhotoTitle": "Foto de perfil de {name}",
+      "closeContactPhoto": "Fechar foto"
     },
     "sessionTimer": {
       "expired": "Expirado",

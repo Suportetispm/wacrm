@@ -17,6 +17,12 @@ import { openPendingConversation, sweepStaleConversations } from "@/lib/inbox/st
 import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
 import { useAuth } from "@/hooks/use-auth";
+import { useContactAvatarSync } from "@/hooks/use-contact-avatar-sync";
+import {
+  applyAvatarSyncResults,
+  applyAvatarSyncResultsToContact,
+} from "@/lib/inbox/avatar-sync-queue";
+import type { AvatarSyncResult } from "@/lib/inbox/contact-avatar-sync-shared";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
@@ -391,6 +397,19 @@ function InboxPageInner() {
     },
     [activeConversation, hydrateConversation]
   );
+
+  // Background WhatsApp-avatar sync for conversations that already exist
+  // (no new message needed). Results patch every conversation of the
+  // same contact, plus the separately-held active conversation/contact —
+  // no refetch, no realtime on contacts, no polling.
+  const handleAvatarSyncResults = useCallback((results: AvatarSyncResult[]) => {
+    setConversations((prev) => applyAvatarSyncResults(prev, results));
+    setActiveConversation((prev) =>
+      prev ? (applyAvatarSyncResults([prev], results)[0] ?? prev) : prev,
+    );
+    setActiveContact((prev) => applyAvatarSyncResultsToContact(prev, results));
+  }, []);
+  useContactAvatarSync(conversations, handleAvatarSyncResults);
 
   // Subscribe to realtime. The `isConnected` flag below feeds the
   // reconnect resync: realtime is best-effort and events sent while the
