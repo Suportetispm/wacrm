@@ -112,6 +112,11 @@ export interface Contact {
   email?: string;
   company?: string;
   avatar_url?: string;
+  /** Synced WhatsApp profile picture (migration 085): private storage
+   *  path, served only through GET /api/contacts/[id]/avatar. NULL/absent
+   *  = no known photo (UI shows initials). */
+  whatsapp_avatar_path?: string | null;
+  whatsapp_avatar_checked_at?: string | null;
   created_at: string;
   updated_at: string;
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the

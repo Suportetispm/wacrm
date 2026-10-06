@@ -41,6 +41,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ContactAvatar } from "@/components/inbox/contact-avatar";
 
 interface ConversationListProps {
   activeConversationId: string | null;
@@ -722,15 +723,12 @@ function ConversationItem({
     >
       {/* Avatar */}
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
-        {contact?.avatar_url ? (
-          <img
-            src={contact.avatar_url}
-            alt={displayName}
-            className="h-10 w-10 rounded-full object-cover"
-          />
-        ) : (
-          initials
-        )}
+        <ContactAvatar
+          contact={contact}
+          alt={displayName}
+          fallback={initials}
+          imgClassName="h-10 w-10 rounded-full object-cover"
+        />
       </div>
 
       {/* Content */}

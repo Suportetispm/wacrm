@@ -67,6 +67,7 @@ import {
   type ActiveTicketOverride,
 } from "@/lib/inbox/conversations";
 import { classifyTicketActionError } from "@/lib/tickets/status";
+import { ContactAvatar } from "@/components/inbox/contact-avatar";
 import { toast } from "sonner";
 
 interface ReplyDraft {
@@ -1271,7 +1272,12 @@ export function MessageThread({
             </button>
           )}
           <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
-            {displayName.charAt(0).toUpperCase()}
+            <ContactAvatar
+              contact={contact}
+              alt={displayName}
+              fallback={displayName.charAt(0).toUpperCase()}
+              imgClassName="h-9 w-9 rounded-full object-cover"
+            />
           </div>
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold text-foreground">{displayName}</h2>

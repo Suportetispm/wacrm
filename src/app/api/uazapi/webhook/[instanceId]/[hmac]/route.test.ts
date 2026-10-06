@@ -15,9 +15,9 @@ const mocks = vi.hoisted(() => ({
   persistInboundImageMessage: vi.fn(),
   parseInboundAudioMessage: vi.fn(),
   persistInboundAudioMessage: vi.fn(),
-  // TEMPORARY — avatar discovery.
-  shouldRunAvatarDiscovery: vi.fn(() => false),
-  runAvatarDiscovery: vi.fn(async () => {}),
+  syncContactWhatsAppAvatar: vi.fn<(args: unknown) => Promise<'updated'>>(async () => 'updated'),
+  afterCallbacks: [] as Array<() => unknown>,
+  after: vi.fn(),
   decrypt: vi.fn(),
   isAccountActive: vi.fn(),
   dispatchInboundToFlows: vi.fn(async () => ({ consumed: false, outcome: 'no_match' as const })),
@@ -72,11 +72,20 @@ vi.mock('@/lib/whatsapp/uazapi-webhook-audio-persist', () => ({
   persistInboundAudioMessage: mocks.persistInboundAudioMessage,
 }))
 
-// TEMPORARY — avatar discovery (module unit-tested on its own).
-vi.mock('@/lib/whatsapp/uazapi-avatar-discovery', () => ({
-  shouldRunAvatarDiscovery: mocks.shouldRunAvatarDiscovery,
-  runAvatarDiscovery: mocks.runAvatarDiscovery,
-}))
+// Contact avatar sync: the real `extractIndividualChatId` (group/fromMe
+// filtering on the raw payload) is kept; only the sync itself is mocked.
+vi.mock('@/lib/whatsapp/contact-avatar-sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/whatsapp/contact-avatar-sync')>()
+  return { ...actual, syncContactWhatsAppAvatar: mocks.syncContactWhatsAppAvatar }
+})
+
+// `after()` needs a real Next request scope; here it just records the
+// callback so tests can run it explicitly (proving it runs after, and
+// independently of, the response).
+vi.mock('next/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('next/server')>()
+  return { ...actual, after: mocks.after }
+})
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
   decrypt: mocks.decrypt,
@@ -174,11 +183,13 @@ beforeEach(() => {
   mocks.parseInboundDocumentMessage.mockReturnValue(null)
   mocks.parseInboundImageMessage.mockReturnValue(null)
   mocks.parseInboundAudioMessage.mockReturnValue(null)
-  // TEMPORARY — avatar discovery: off by default in every test.
-  mocks.shouldRunAvatarDiscovery.mockReset()
-  mocks.shouldRunAvatarDiscovery.mockReturnValue(false)
-  mocks.runAvatarDiscovery.mockReset()
-  mocks.runAvatarDiscovery.mockResolvedValue(undefined)
+  mocks.syncContactWhatsAppAvatar.mockReset()
+  mocks.syncContactWhatsAppAvatar.mockResolvedValue('updated')
+  mocks.afterCallbacks.length = 0
+  mocks.after.mockReset()
+  mocks.after.mockImplementation((cb: () => unknown) => {
+    mocks.afterCallbacks.push(cb)
+  })
   mocks.decrypt.mockReturnValue('fixture-decrypted-token')
   mocks.isAccountActive.mockReset()
   mocks.isAccountActive.mockResolvedValue(true)
@@ -1109,105 +1120,120 @@ describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — audio / voice-note pa
   })
 })
 
-// TEMPORARY — avatar discovery: route wiring only (the module's own
-// behavior is tested in uazapi-avatar-discovery.test.ts). Remove
-// together with the route wiring and the module.
-describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — TEMPORARY avatar discovery wiring', () => {
-  function mediaRequest() {
-    return request({ EventType: 'messages', message: { fromMe: false, isGroup: false } })
+describe('POST /api/uazapi/webhook/[instanceId]/[hmac] — contact WhatsApp avatar sync scheduling', () => {
+  const CHAT_ID = '551199999999@s.whatsapp.net'
+
+  function inboundRequest(message: Record<string, unknown> = {}, chat: Record<string, unknown> = {}) {
+    return request({
+      EventType: 'messages',
+      chat: { wa_isGroup: false, ...chat },
+      message: { chatid: CHAT_ID, fromMe: false, wasSentByApi: false, isGroup: false, ...message },
+    })
   }
 
-  beforeEach(() => {
-    mocks.parseInboundTextMessage.mockReturnValue(null)
+  const TEXT_FIXTURE = {
+    externalMessageId: 'txt-1',
+    phone: '551199999999',
+    name: 'Fixture',
+    text: 'oi',
+    occurredAt: '2026-01-01T00:00:00.000Z',
+  }
+
+  async function runScheduled() {
+    for (const cb of mocks.afterCallbacks) await cb()
+  }
+
+  it('TEXT persisted: schedules after the response, then syncs with this account/contact, the raw chatId and THIS connection token', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue(TEXT_FIXTURE)
+    mocks.persistInboundTextMessage.mockResolvedValue({
+      outcome: 'persisted', contactId: 'contact-1', conversationId: 'conv-1', routingState: null, isFirstInboundMessage: false,
+    })
+
+    const res = await POST(inboundRequest(), params)
+
+    expect(await res.json()).toEqual({ status: 'persisted' })
+    expect(mocks.after).toHaveBeenCalledTimes(1)
+    // Nothing ran inside the request itself.
+    expect(mocks.syncContactWhatsAppAvatar).not.toHaveBeenCalled()
+
+    await runScheduled()
+    expect(mocks.syncContactWhatsAppAvatar).toHaveBeenCalledTimes(1)
+    const args = mocks.syncContactWhatsAppAvatar.mock.calls[0][0] as {
+      accountId: string; contactId: string; chatId: string; getInstanceToken: () => Promise<string>
+    }
+    expect(args).toMatchObject({ accountId: CONFIG_ROW.account_id, contactId: 'contact-1', chatId: CHAT_ID })
+    await expect(args.getInstanceToken()).resolves.toBe('fixture-decrypted-token')
   })
 
-  it('gate closed (default): never resolves a token or calls the discovery', async () => {
-    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
-    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
-
-    const res = await POST(mediaRequest(), params)
-
-    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
-    expect(mocks.runAvatarDiscovery).not.toHaveBeenCalled()
-  })
-
-  it('audio persisted + gate open: runs once with parsed.chatId and the decrypted token of THIS connection; response unchanged', async () => {
-    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
-    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
-    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
-
-    const res = await POST(mediaRequest(), params)
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
-    expect(mocks.shouldRunAvatarDiscovery).toHaveBeenCalledWith(expect.anything(), PARSED_AUDIO_FIXTURE.chatId)
-    expect(mocks.runAvatarDiscovery).toHaveBeenCalledTimes(1)
-    expect(mocks.runAvatarDiscovery).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: PARSED_AUDIO_FIXTURE.chatId,
-        instanceToken: 'fixture-decrypted-token',
-        maskedInstanceId: 'fix…id',
-      }),
+  it.each([
+    ['audio', () => {
+      mocks.parseInboundTextMessage.mockReturnValue(null)
+      mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
+      mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'contact-a', conversationId: 'v' })
+    }],
+    ['image', () => {
+      mocks.parseInboundTextMessage.mockReturnValue(null)
+      mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
+      mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'contact-a', conversationId: 'v', routingState: null })
+    }],
+    ['document', () => {
+      mocks.parseInboundTextMessage.mockReturnValue(null)
+      mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
+      mocks.persistInboundDocumentMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'contact-a', conversationId: 'v', routingState: null })
+    }],
+  ])('%s persisted: also schedules the sync for the same contact', async (_label, setup) => {
+    setup()
+    await POST(inboundRequest(), params)
+    await runScheduled()
+    expect(mocks.syncContactWhatsAppAvatar).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: CONFIG_ROW.account_id, contactId: 'contact-a', chatId: CHAT_ID }),
     )
   })
 
-  it('image and document persisted + gate open: also wired, with their own parsed.chatId', async () => {
-    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
-    mocks.parseInboundImageMessage.mockReturnValue(PARSED_IMAGE_FIXTURE)
-    mocks.persistInboundImageMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v', routingState: null })
-    await POST(mediaRequest(), params)
-    expect(mocks.runAvatarDiscovery).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: PARSED_IMAGE_FIXTURE.chatId }))
+  it('groups are never scheduled (@g.us / isGroup / wa_isGroup), even if a parser accepted the event', async () => {
+    mocks.parseInboundTextMessage.mockReturnValue(TEXT_FIXTURE)
+    mocks.persistInboundTextMessage.mockResolvedValue({
+      outcome: 'persisted', contactId: 'contact-1', conversationId: 'conv-1', routingState: null, isFirstInboundMessage: false,
+    })
 
-    mocks.parseInboundImageMessage.mockReturnValue(null)
-    mocks.parseInboundDocumentMessage.mockReturnValue(PARSED_DOCUMENT_FIXTURE)
-    mocks.persistInboundDocumentMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v', routingState: null })
-    await POST(mediaRequest(), params)
-    expect(mocks.runAvatarDiscovery).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: PARSED_DOCUMENT_FIXTURE.chatId }))
+    await POST(inboundRequest({ chatid: '120363000000000000@g.us' }), params)
+    await POST(inboundRequest({ isGroup: true }), params)
+    await POST(inboundRequest({}, { wa_isGroup: true }), params)
+
+    expect(mocks.after).not.toHaveBeenCalled()
   })
 
-  it('only after a real persistence: duplicate or error outcomes never run it', async () => {
+  it('duplicate deliveries and persistence errors never schedule it', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
-    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
-
-    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'duplicate', contactId: 'c', conversationId: 'v' })
-    await POST(mediaRequest(), params)
-    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'error', code: 'download_failed' })
-    const res = await POST(mediaRequest(), params)
+    mocks.parseInboundTextMessage.mockReturnValue(TEXT_FIXTURE)
+    mocks.persistInboundTextMessage.mockResolvedValueOnce({ outcome: 'duplicate', contactId: 'c', conversationId: 'v', routingState: null })
+    await POST(inboundRequest(), params)
+    mocks.persistInboundTextMessage.mockResolvedValueOnce({ outcome: 'error', code: 'database_failed' })
+    const res = await POST(inboundRequest(), params)
 
     expect(res.status).toBe(503)
-    expect(mocks.runAvatarDiscovery).not.toHaveBeenCalled()
+    expect(mocks.after).not.toHaveBeenCalled()
     errorSpy.mockRestore()
   })
 
-  it('a discovery failure (429/5xx/throw) never changes the webhook response', async () => {
-    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
-    mocks.runAvatarDiscovery.mockRejectedValue(new Error('boom'))
-    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
-    mocks.persistInboundAudioMessage.mockResolvedValue({ outcome: 'persisted', contactId: 'c', conversationId: 'v' })
-
-    const res = await POST(mediaRequest(), params)
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
-  })
-
-  it('token unavailable: logs only a fixed code, discovery not run, response unchanged', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    mocks.shouldRunAvatarDiscovery.mockReturnValue(true)
-    mocks.parseInboundAudioMessage.mockReturnValue(PARSED_AUDIO_FIXTURE)
-    mocks.persistInboundAudioMessage.mockImplementation(async () => {
-      // The persist step consumed the token; the discovery's own lookup now fails.
-      tokenLookupResult = { data: null, error: null }
-      return { outcome: 'persisted', contactId: 'c', conversationId: 'v' }
+  it('a failing sync or an unavailable after() never changes the webhook response', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.parseInboundTextMessage.mockReturnValue(TEXT_FIXTURE)
+    mocks.persistInboundTextMessage.mockResolvedValue({
+      outcome: 'persisted', contactId: 'contact-1', conversationId: 'conv-1', routingState: null, isFirstInboundMessage: false,
     })
 
-    const res = await POST(mediaRequest(), params)
+    mocks.syncContactWhatsAppAvatar.mockRejectedValue(new Error('boom'))
+    const res1 = await POST(inboundRequest(), params)
+    await expect(runScheduled()).resolves.toBeUndefined()
+    expect(await res1.json()).toEqual({ status: 'persisted' })
 
-    expect(await res.json()).toEqual({ status: 'persisted', type: 'audio' })
-    expect(mocks.runAvatarDiscovery).not.toHaveBeenCalled()
-    const line = logSpy.mock.calls.find((a) => a[0] === '[uazapi/avatar-discovery]')
-    expect(line?.[1]).toBe(JSON.stringify({ code: 'token_unavailable' }))
-    logSpy.mockRestore()
+    mocks.after.mockImplementation(() => {
+      throw new Error('after() called outside a request scope')
+    })
+    const res2 = await POST(inboundRequest(), params)
+    expect(res2.status).toBe(200)
+    expect(await res2.json()).toEqual({ status: 'persisted' })
+    errorSpy.mockRestore()
   })
 })

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ContactAvatar } from "@/components/inbox/contact-avatar";
 import { format } from "date-fns";
 import { useTranslations } from "next-intl";
 
@@ -137,15 +138,12 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
           {/* Contact Info */}
           <div className="flex flex-col items-center text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted text-lg font-semibold text-foreground">
-              {contact.avatar_url ? (
-                <img
-                  src={contact.avatar_url}
-                  alt={displayName}
-                  className="h-16 w-16 rounded-full object-cover"
-                />
-              ) : (
-                initials
-              )}
+              <ContactAvatar
+                contact={contact}
+                alt={displayName}
+                fallback={initials}
+                imgClassName="h-16 w-16 rounded-full object-cover"
+              />
             </div>
             <h3 className="mt-3 text-sm font-semibold text-foreground">
               {displayName}

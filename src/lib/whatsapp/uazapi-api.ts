@@ -749,3 +749,51 @@ export async function downloadMessageMedia(
     transcription: typeof data?.transcription === 'string' ? data.transcription : undefined,
   }
 }
+
+// ============================================================
+// Chat avatar
+// ============================================================
+
+/** `/chat/avatar` answers with a single small JSON object — anything larger is refused. */
+const UAZAPI_CHAT_AVATAR_MAX_BODY_BYTES = 64 * 1024
+
+export interface GetChatAvatarArgs {
+  instanceToken: string
+  /** Chat identifier exactly as UAZAPI documents it: number with DDI, user JID, or a LID known to the instance. */
+  number: string
+  /** `true` (default here) asks for the reduced preview — all the small Inbox avatar needs; `false` for the full image. */
+  preview?: boolean
+  signal?: AbortSignal
+}
+
+/**
+ * Wraps `POST /chat/avatar` (uazapiGO 2.4.x `getChatAvatar`). Returns
+ * the TEMPORARY image URL UAZAPI reports for the chat — an empty string
+ * is a valid answer meaning "no picture available" and is never treated
+ * as an error. Never sends `force` (the docs reserve it for rare,
+ * rate-limited refreshes). Non-2xx responses throw `UazapiHttpError`
+ * with the real status preserved. Logs nothing.
+ */
+export async function getChatAvatar(args: GetChatAvatarArgs): Promise<{ url: string }> {
+  const { instanceToken, number, preview = true, signal } = args
+  const response = await uazapiFetch(
+    `${uazapiServerUrl()}/chat/avatar`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        token: instanceToken,
+      },
+      body: JSON.stringify({ number, preview }),
+    },
+    UAZAPI_DEFAULT_TIMEOUT_MS,
+    signal,
+  )
+  if (!response.ok) {
+    await throwUazapiError(response, `UAZAPI error: ${response.status}`)
+  }
+  const data = (await readBoundedJson(response, UAZAPI_CHAT_AVATAR_MAX_BODY_BYTES)) as
+    | Record<string, unknown>
+    | null
+  return { url: typeof data?.url === 'string' ? data.url.trim() : '' }
+}
