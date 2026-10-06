@@ -68,6 +68,12 @@ import {
 } from "@/lib/inbox/conversations";
 import { classifyTicketActionError } from "@/lib/tickets/status";
 import { ContactAvatar } from "@/components/inbox/contact-avatar";
+import { ConversationEventMarker } from "./conversation-event-marker";
+import { useConversationHistory } from "@/hooks/use-conversation-history";
+import {
+  buildConversationTimeline,
+  groupTimelineByDate,
+} from "@/lib/inbox/conversation-timeline";
 import { toast } from "sonner";
 
 interface ReplyDraft {
@@ -163,23 +169,6 @@ function formatDateSeparator(dateStr: string, t: ReturnType<typeof useTranslatio
   if (isToday(date)) return t("today");
   if (isYesterday(date)) return t("yesterday");
   return format(date, "MMMM d, yyyy");
-}
-
-function groupMessagesByDate(messages: Message[]) {
-  const groups: { date: string; messages: Message[] }[] = [];
-  let currentDate = "";
-
-  for (const msg of messages) {
-    const day = format(new Date(msg.created_at), "yyyy-MM-dd");
-    if (day !== currentDate) {
-      currentDate = day;
-      groups.push({ date: msg.created_at, messages: [msg] });
-    } else {
-      groups[groups.length - 1].messages.push(msg);
-    }
-  }
-
-  return groups;
 }
 
 // Migration 045 (FASE 5C): substitui o antigo open/pending/closed por
@@ -534,14 +523,6 @@ export function MessageThread({
     };
   }, [conversationId, hasUnread, t]);
 
-  // Auto-scroll to bottom on new messages
-  useEffect(() => {
-    if (scrollRef.current) {
-      const el = scrollRef.current;
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages]);
-
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {
       if (!conversation) return;
@@ -795,6 +776,42 @@ export function MessageThread({
   // o comportamento é idêntico ao anterior.
   const statusChangeInFlightRef = useRef(false);
   const [statusUpdating, setStatusUpdating] = useState(false);
+
+  // Attendance-history markers (migration 086) via GET
+  // /api/conversations/[id]/history — never by polling. Refetched on
+  // resync or when the conversation's status / assignee / queue change,
+  // paused while a local status change is in flight (applied
+  // optimistically BEFORE the commit): a confirmed change is fetched
+  // once after the commit, a rolled-back one fetches nothing.
+  // `updated_at` only changes when a database-confirmed row arrives, so
+  // a key applied optimistically elsewhere (the page's auto-claim on
+  // open) is refetched once its own realtime row lands — see
+  // use-conversation-history.ts. `queue_id` is on every conversations
+  // row (select * and the realtime payload) but not declared on the
+  // Conversation type.
+  const historyEvents = useConversationHistory({
+    conversationId,
+    refreshKey: [
+      resyncToken ?? 0,
+      conversation?.status ?? "",
+      conversation?.assigned_agent_id ?? "",
+      (conversation as { queue_id?: string | null } | null)?.queue_id ?? "",
+    ].join("|"),
+    updatedAt: conversation?.updated_at ?? null,
+    paused: statusUpdating,
+  });
+  const timelineGroups = useMemo(
+    () => groupTimelineByDate(buildConversationTimeline(messages, historyEvents)),
+    [messages, historyEvents],
+  );
+
+  // Auto-scroll to bottom on new messages — and on new history markers.
+  useEffect(() => {
+    if (scrollRef.current) {
+      const el = scrollRef.current;
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages, historyEvents.length]);
 
   // 068 Etapa 2 (P1): a ticket RPC changes tickets.*, but the realtime
   // conversations UPDATE that follows never carries the embedded
@@ -1223,7 +1240,6 @@ export function MessageThread({
   }
 
   const displayName = contact.name || contact.phone;
-  const messageGroups = groupMessagesByDate(messages);
   const currentStatus = STATUS_OPTIONS.find(
     (s) => s.value === conversation.status
   );
@@ -1464,7 +1480,7 @@ export function MessageThread({
           <div className="flex items-center justify-center py-12">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           </div>
-        ) : messages.length === 0 ? (
+        ) : messages.length === 0 && historyEvents.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12">
             <p className="text-sm text-muted-foreground">{t("noMessagesYet")}</p>
             <p className="text-xs text-muted-foreground">
@@ -1473,7 +1489,7 @@ export function MessageThread({
           </div>
         ) : (
           <div className="space-y-4">
-            {messageGroups.map((group) => (
+            {timelineGroups.map((group) => (
               <div key={group.date}>
                 {/* Date separator */}
                 <div className="mb-4 flex items-center justify-center">
@@ -1483,7 +1499,19 @@ export function MessageThread({
                 </div>
                 {/* Messages */}
                 <div className="space-y-2">
-                  {group.messages.map((msg) => {
+                  {group.items.map((item) => {
+                    // Attendance-history marker (086) — presentation only,
+                    // never a message (not in `messages`, never sent).
+                    if (item.kind === "event") {
+                      return (
+                        <ConversationEventMarker
+                          key={item.key}
+                          event={item.event}
+                          previousEvent={item.previousEvent}
+                        />
+                      );
+                    }
+                    const msg = item.message;
                     const parent = msg.reply_to_message_id
                       ? messagesById.get(msg.reply_to_message_id)
                       : null;
