@@ -156,6 +156,15 @@
     "toastMarkAllFailed": "Falha ao marcar todas como lidas",
     "conversationAssignedTitle": "Nova conversa atribuída"
   },
+  "BrowserNotifier": {
+    "messageTitle": "Nova mensagem",
+    "messageBody": "Você recebeu uma nova mensagem no SPM Ticket.",
+    "newConversationTitle": "Novo atendimento",
+    "newConversationBody": "Um novo atendimento chegou no SPM Ticket.",
+    "previewFallbackBody": "Nova mensagem recebida.",
+    "resyncTitle": "Novas mensagens",
+    "resyncBody": "{count, plural, =1 {1 conversa recebeu novas mensagens.} other {# conversas receberam novas mensagens.}}"
+  },
   "Admin": {
     "nav": {
       "title": "Superadmin",
@@ -2182,6 +2191,7 @@
       "profile": "Seu perfil",
       "security": "Login e segurança",
       "appearance": "Aparência",
+      "notifications": "Notificações",
       "whatsapp": "WhatsApp",
       "templates": "Modelos",
       "quick-replies": "Respostas rápidas",
@@ -2255,6 +2265,32 @@
       "active": "Ativo",
       "accentColor": "Cor de destaque",
       "useTheme": "Usar tema {name}"
+    },
+    "notifications": {
+      "title": "Notificações",
+      "description": "Receba avisos do navegador sobre novas mensagens e novos atendimentos enquanto o SPM Ticket estiver aberto, mesmo em outra aba ou minimizado. Salvo neste navegador.",
+      "statusUnsupported": "Este navegador não oferece notificações nativas. Os avisos dentro do sistema continuam funcionando.",
+      "statusInsecure": "As notificações do navegador exigem uma conexão segura (HTTPS).",
+      "statusDenied": "As notificações estão bloqueadas para este site. Para liberar, clique no cadeado ao lado do endereço e permita Notificações.",
+      "statusGranted": "O navegador permite notificações deste site.",
+      "statusDefault": "O navegador ainda não autorizou notificações deste site.",
+      "requestButton": "Permitir notificações",
+      "permissionDeniedToast": "Permissão negada pelo navegador. Libere as notificações nas configurações do site.",
+      "enabledLabel": "Ativar notificações",
+      "enabledHint": "Avisa sobre novas mensagens de clientes e novos atendimentos. Não avisa sobre mensagens enviadas por você ou pela equipe.",
+      "soundLabel": "Alerta sonoro",
+      "soundHint": "Toca um aviso curto junto com a notificação. Alguns navegadores só liberam o som depois do primeiro clique na página.",
+      "previewLabel": "Mostrar prévia da mensagem",
+      "previewHint": "Exibe o nome do contato e o texto da mensagem na notificação. Desativado, a notificação não mostra dados do cliente.",
+      "onlyMineLabel": "Somente meus setores e atendimentos",
+      "onlyMineHint": "Notifica apenas conversas dos setores em que você atua ou atribuídas a você.",
+      "onlyMineDefaultOn": "Ativado por padrão para administradores.",
+      "onlyMineDefaultOff": "Desativado por padrão para o seu perfil.",
+      "scopeNote": "Você só recebe notificações de conversas que já pode ver na Inbox. Funciona com o SPM Ticket aberto; com o navegador fechado, nada é enviado.",
+      "testButton": "Enviar notificação de teste",
+      "testTitle": "SPM Ticket",
+      "testBody": "As notificações estão funcionando neste navegador.",
+      "testFailed": "Este navegador não conseguiu exibir a notificação."
     },
     "security": {
       "title": "Login e segurança",

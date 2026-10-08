@@ -156,6 +156,15 @@
     "toastMarkAllFailed": "Failed to mark all as read",
     "conversationAssignedTitle": "New conversation assigned"
   },
+  "BrowserNotifier": {
+    "messageTitle": "New message",
+    "messageBody": "You received a new message in SPM Ticket.",
+    "newConversationTitle": "New conversation",
+    "newConversationBody": "A new conversation arrived in SPM Ticket.",
+    "previewFallbackBody": "New message received.",
+    "resyncTitle": "New messages",
+    "resyncBody": "{count, plural, =1 {1 conversation has new messages.} other {# conversations have new messages.}}"
+  },
   "Admin": {
     "nav": {
       "title": "Superadmin",
@@ -2182,6 +2191,7 @@
       "profile": "Your profile",
       "security": "Login & security",
       "appearance": "Appearance",
+      "notifications": "Notifications",
       "whatsapp": "WhatsApp",
       "templates": "Templates",
       "quick-replies": "Quick replies",
@@ -2255,6 +2265,32 @@
       "active": "Active",
       "accentColor": "Accent color",
       "useTheme": "Use {name} theme"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "description": "Get browser alerts for new messages and new conversations while SPM Ticket is open, even in another tab or minimised. Saved in this browser.",
+      "statusUnsupported": "This browser doesn't offer native notifications. In-app alerts keep working.",
+      "statusInsecure": "Browser notifications require a secure connection (HTTPS).",
+      "statusDenied": "Notifications are blocked for this site. To allow them, click the lock next to the address and allow Notifications.",
+      "statusGranted": "The browser allows notifications from this site.",
+      "statusDefault": "The browser hasn't allowed notifications from this site yet.",
+      "requestButton": "Allow notifications",
+      "permissionDeniedToast": "The browser denied permission. Allow notifications in the site settings.",
+      "enabledLabel": "Enable notifications",
+      "enabledHint": "Alerts on new customer messages and new conversations. Never alerts on messages sent by you or your team.",
+      "soundLabel": "Sound alert",
+      "soundHint": "Plays a short tone with the notification. Some browsers only allow sound after your first click on the page.",
+      "previewLabel": "Show message preview",
+      "previewHint": "Shows the contact name and message text in the notification. When off, no customer data is shown.",
+      "onlyMineLabel": "Only my sectors and assignments",
+      "onlyMineHint": "Only alerts on conversations in your sectors or assigned to you.",
+      "onlyMineDefaultOn": "On by default for admins.",
+      "onlyMineDefaultOff": "Off by default for your role.",
+      "scopeNote": "You're only notified about conversations you can already see in the Inbox. Works while SPM Ticket is open; with the browser closed nothing is sent.",
+      "testButton": "Send test notification",
+      "testTitle": "SPM Ticket",
+      "testBody": "Notifications are working in this browser.",
+      "testFailed": "This browser couldn't show the notification."
     },
     "security": {
       "title": "Login & security",

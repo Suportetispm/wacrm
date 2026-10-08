@@ -156,6 +156,15 @@
     "toastMarkAllFailed": "모두 읽음으로 표시하지 못했습니다",
     "conversationAssignedTitle": "새 대화가 배정되었습니다"
   },
+  "BrowserNotifier": {
+    "messageTitle": "새 메시지",
+    "messageBody": "SPM Ticket에 새 메시지가 도착했습니다.",
+    "newConversationTitle": "새 상담",
+    "newConversationBody": "SPM Ticket에 새 상담이 도착했습니다.",
+    "previewFallbackBody": "새 메시지를 받았습니다.",
+    "resyncTitle": "새 메시지",
+    "resyncBody": "{count}개의 대화에 새 메시지가 있습니다."
+  },
   "Admin": {
     "nav": {
       "title": "슈퍼관리자",
@@ -2182,6 +2191,7 @@
       "profile": "내 프로필",
       "security": "로그인 & 보안",
       "appearance": "화면 설정",
+      "notifications": "알림",
       "whatsapp": "WhatsApp",
       "templates": "템플릿",
       "quick-replies": "빠른 답장",
@@ -2255,6 +2265,32 @@
       "active": "사용 중",
       "accentColor": "강조 색상",
       "useTheme": "{name} 테마 사용"
+    },
+    "notifications": {
+      "title": "알림",
+      "description": "SPM Ticket이 열려 있는 동안 다른 탭에 있거나 최소화되어 있어도 새 메시지와 새 상담에 대한 브라우저 알림을 받습니다. 이 브라우저에 저장됩니다.",
+      "statusUnsupported": "이 브라우저는 기본 알림을 지원하지 않습니다. 앱 내 알림은 계속 작동합니다.",
+      "statusInsecure": "브라우저 알림을 사용하려면 보안 연결(HTTPS)이 필요합니다.",
+      "statusDenied": "이 사이트의 알림이 차단되어 있습니다. 주소 옆의 자물쇠 아이콘을 클릭해 알림을 허용하세요.",
+      "statusGranted": "브라우저가 이 사이트의 알림을 허용합니다.",
+      "statusDefault": "브라우저가 아직 이 사이트의 알림을 허용하지 않았습니다.",
+      "requestButton": "알림 허용",
+      "permissionDeniedToast": "브라우저가 권한을 거부했습니다. 사이트 설정에서 알림을 허용하세요.",
+      "enabledLabel": "알림 사용",
+      "enabledHint": "고객의 새 메시지와 새 상담을 알려 줍니다. 본인이나 팀이 보낸 메시지는 알리지 않습니다.",
+      "soundLabel": "알림음",
+      "soundHint": "알림과 함께 짧은 소리를 재생합니다. 일부 브라우저는 페이지를 한 번 클릭한 후에만 소리를 허용합니다.",
+      "previewLabel": "메시지 미리보기 표시",
+      "previewHint": "알림에 연락처 이름과 메시지 내용을 표시합니다. 끄면 고객 정보가 표시되지 않습니다.",
+      "onlyMineLabel": "내 부서와 배정된 상담만",
+      "onlyMineHint": "내가 속한 부서의 대화나 나에게 배정된 대화만 알립니다.",
+      "onlyMineDefaultOn": "관리자는 기본적으로 켜져 있습니다.",
+      "onlyMineDefaultOff": "현재 역할은 기본적으로 꺼져 있습니다.",
+      "scopeNote": "받은편지함에서 볼 수 있는 대화에 대해서만 알림을 받습니다. SPM Ticket이 열려 있을 때만 작동하며, 브라우저를 닫으면 알림이 전송되지 않습니다.",
+      "testButton": "테스트 알림 보내기",
+      "testTitle": "SPM Ticket",
+      "testBody": "이 브라우저에서 알림이 작동합니다.",
+      "testFailed": "이 브라우저에서 알림을 표시하지 못했습니다."
     },
     "security": {
       "title": "로그인 & 보안",
