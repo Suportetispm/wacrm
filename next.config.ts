@@ -65,6 +65,20 @@ const SECURITY_HEADERS = [
 
 const nextConfig: NextConfig = {
   /**
+   * Limite de workers do `next build`.
+   *
+   * Sem este valor, o Next usa `os.cpus().length - 1` workers nas etapas
+   * "Collecting page data" e "Generating static pages". No build da
+   * Hostinger a máquina expõe 64 CPUs, então o Next tentava abrir 63
+   * workers e o ambiente não conseguia criar as threads ("OS can't spawn
+   * worker thread ... os error 11"), abortando o build com SIGABRT.
+   * Fixar em 2 só afeta o paralelismo do build; não muda nada em runtime.
+   */
+  experimental: {
+    cpus: 2,
+  },
+
+  /**
    * Cross-origin dev access (Next.js 16).
    *
    * Next 16 blocks requests to dev-only resources (`/_next/*` internals,
