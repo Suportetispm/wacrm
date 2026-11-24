@@ -51,7 +51,7 @@
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "lucide-react": "^1.22.0",
-    "next": "16.4.3",
+    "next": "16.4.6",
     "next-intl": "^4.13.2",
     "opus-recorder": "^8.0.5",
     "react": "19.2.4",
@@ -79,12 +79,12 @@
     "postcss": "8.5.28",
     "ip-address": "10.7.4",
     "fast-uri": "3.1.9",
-    "hono": "4.13.13",
-    "@hono/node-server": "2.1.5",
+    "hono": "4.13.21",
+    "@hono/node-server": "2.1.11",
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18",
     "browserslist": "4.28.9",
-    "express-rate-limit": "8.7.0",
+    "express-rate-limit": "8.7.5",
     "@babel/core": "^7.29.6"
   }
 }
