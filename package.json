@@ -85,6 +85,10 @@
     "nanoid": "3.3.18",
     "browserslist": "4.28.9",
     "express-rate-limit": "8.7.5",
-    "@babel/core": "^7.29.6"
+    "@babel/core": "^7.29.6",
+    "typescript-eslint": "8.74.0",
+    "@ts-morph/common": {
+      "minimatch": "11.0.1"
+    }
   }
 }
